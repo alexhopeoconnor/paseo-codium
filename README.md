@@ -29,8 +29,9 @@ The workstation deployment tooling pins, checks and installs both outputs.
 From **Command Center → Open workspace in VSCodium**, the workspace panel opens
 the actual checkout or linked-worktree directory. Supported files offer
 **VSCodium** under **Open with**. In embedded web mode their lightweight file
-panel offers **Open in workspace editor**; all file requests go to that workspace
-panel. External file opening and copy-link remain available.
+panel's primary action is **Open in VSCodium tab**, which sends the file to the
+shared workspace editor inside Paseo. **Open in browser** and **Copy browser link**
+remain secondary actions for standalone opening.
 
 ## Authentication and editor sessions
 
@@ -96,9 +97,11 @@ Known Paseo 0.15.0 boundaries:
   and restores its last successfully opened target; Codium owns other workbench
   and terminal restoration. Do not assume every background terminal remains
   continuously attached. Dirty/unknown panels use the native retention flag.
-- The file launcher tab remains because the SDK has no close-tab or general
-  file-interception API. Clicking its explicit action avoids replaying a file
-  request just because Paseo remounts a launcher.
+- Opening a supported file with this plugin first shows its launcher; click
+  **Open in VSCodium tab** to send it to the workspace editor. This extra click is
+  currently required. The launcher tab remains because the SDK has no close-tab
+  or general file-interception API. Explicit navigation avoids replaying a file
+  request just because Paseo remounts the launcher.
 - Existing file-at-line links can force Paseo's built-in panel despite saved
   associations. This plugin cannot override every chat link.
 - Native clients use external opening. Embedded mode is a web-client capability.

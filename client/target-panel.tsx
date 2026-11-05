@@ -1,8 +1,9 @@
 import { useSettings, useWorkspace, type PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { copyText, ExternalLink, Icon, Loading } from "@getpaseo/plugin/client/ui";
 import { useState } from "react";
-import { Pressable, Text, View } from "react-native";
+import { Platform, Pressable, Text, View } from "react-native";
 import { codiumSettings } from "../shared/settings";
+import { EMBEDDING_AVAILABLE } from "./features";
 import { makeCodiumUrl, resolveWorkspaceFile, type FileTarget } from "./web";
 
 interface TargetPanelProps extends PluginSurfaceProps {
@@ -10,6 +11,7 @@ interface TargetPanelProps extends PluginSurfaceProps {
   revision: number;
   target?: FileTarget;
   openSettings(): void;
+  openEditor?(target: FileTarget): void;
 }
 
 export function CodiumTargetPanel(props: TargetPanelProps) {
@@ -33,11 +35,13 @@ export function CodiumTargetPanel(props: TargetPanelProps) {
     url = makeCodiumUrl(settings.values.codiumBaseUrl, folder, target);
   }
   catch (error) { return <Message {...props} text={messageOf(error)} />; }
-  const embedded = false;
+  const openEditor = EMBEDDING_AVAILABLE && Platform.OS === "web" && settings.values.openMode === "embedded"
+    ? props.openEditor : undefined;
+  const opensEditorTab = !!openEditor && !!target;
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.surface0 }} testID="codium-panel">
-      <View style={{ padding: embedded ? 12 : 24, gap: 14 }}>
+      <View style={{ padding: 24, gap: 14 }}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
           <Icon name="Code" size={22} color={colors.accent} />
           <Text style={{ color: colors.foreground, fontSize: 20, fontWeight: "600" }}>VSCodium</Text>
@@ -49,24 +53,32 @@ export function CodiumTargetPanel(props: TargetPanelProps) {
           </Text>
         ) : null}
         <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 18 }}>
+          {opensEditorTab ? <Pressable accessibilityRole="button" testID="codium-open-tab" onPress={() => {
+            try { if (openEditor && target) openEditor(target); setActionMessage(""); }
+            catch { setActionMessage("The editor could not accept this request. Try again after it connects."); }
+          }}>
+            <Text style={{ color: colors.accent, fontSize: 15, fontWeight: "600" }}>Open in VSCodium tab</Text>
+          </Pressable> : null}
           <ExternalLink href={url} testID="codium-open" onError={(error) => setActionMessage(messageOf(error))}>
-            <Text style={{ color: colors.accent, fontSize: 15, fontWeight: "600" }}>
-              {props.target ? "Open file in VSCodium" : "Open workspace in VSCodium"}
+            <Text style={{ color: opensEditorTab ? colors.foregroundMuted : colors.accent, fontSize: opensEditorTab ? 14 : 15, fontWeight: opensEditorTab ? "400" : "600" }}>
+              {opensEditorTab ? "Open in browser" : props.target ? "Open file in VSCodium" : "Open workspace in VSCodium"}
             </Text>
           </ExternalLink>
           <Pressable accessibilityRole="button" onPress={() => {
             void copyText(url).then(() => setActionMessage("Link copied."), (error: unknown) => setActionMessage(messageOf(error)));
           }}>
-            <Text style={{ color: colors.foregroundMuted }}>Copy link</Text>
+            <Text style={{ color: colors.foregroundMuted }}>{opensEditorTab ? "Copy browser link" : "Copy link"}</Text>
           </Pressable>
           <Pressable accessibilityRole="button" onPress={props.openSettings}>
             <Text style={{ color: colors.foregroundMuted }}>Settings</Text>
           </Pressable>
         </View>
         {actionMessage ? <Text accessibilityLiveRegion="polite" style={{ color: colors.foregroundMuted }}>{actionMessage}</Text> : null}
-        {!embedded ? <Text style={{ color: colors.foregroundMuted, fontSize: 13 }}>Opens the files on this host in your browser.</Text> : null}
+        <Text style={{ color: colors.foregroundMuted, fontSize: 13 }}>
+          {opensEditorTab ? "Opens this file in the workspace’s VSCodium tab in Paseo." : "Opens the files on this host in your browser."}
+        </Text>
         {target?.path.includes(":") && target.line ? (
-          <Text style={{ color: colors.foregroundMuted, fontSize: 13 }}>This filename contains a colon, so VSCodium opens the file without jumping to a line.</Text>
+          <Text style={{ color: colors.foregroundMuted, fontSize: 13 }}>This filename contains a colon, so the browser link opens the file without jumping to a line.</Text>
         ) : null}
       </View>
     </View>
