@@ -18,6 +18,14 @@ function absolutePath(path: string): void {
   }
 }
 
+export function resolveWorkspaceFile(folder: string, path: string): string {
+  absolutePath(folder);
+  if (!path || path.includes("\0")) throw new Error("Expected a file path on the connected host.");
+  // Paseo file panels receive workspace-relative paths. Keep absolute targets
+  // unchanged and use the actual checkout/worktree directory for relative ones.
+  return path.startsWith("/") ? path : `${folder.replace(/\/+$/, "")}/${path}`;
+}
+
 export function makeCodiumUrl(base: string, folder: string, file?: FileTarget): string {
   codiumOriginSchema.parse(base);
   absolutePath(folder);

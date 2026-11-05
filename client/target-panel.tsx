@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { Platform, Pressable, Text, View } from "react-native";
 import { codiumSettings } from "../shared/settings";
 import { EMBEDDING_AVAILABLE } from "./features";
-import { makeCodiumUrl, mountCodiumFrame, type FileTarget } from "./web";
+import { makeCodiumUrl, mountCodiumFrame, resolveWorkspaceFile, type FileTarget } from "./web";
 
 interface TargetPanelProps extends PluginSurfaceProps {
   workspaceId: string;
@@ -28,7 +28,11 @@ export function CodiumTargetPanel(props: TargetPanelProps) {
   if (!folder) return <Message {...props} text="The workspace directory is not available yet." />;
 
   let url: string;
-  try { url = makeCodiumUrl(settings.values.codiumBaseUrl, folder, props.target); }
+  let target: FileTarget | undefined;
+  try {
+    target = props.target ? { ...props.target, path: resolveWorkspaceFile(folder, props.target.path) } : undefined;
+    url = makeCodiumUrl(settings.values.codiumBaseUrl, folder, target);
+  }
   catch (error) { return <Message {...props} text={messageOf(error)} />; }
   const embedded = EMBEDDING_AVAILABLE && Platform.OS === "web" && settings.values.openMode === "embedded";
 
@@ -40,9 +44,9 @@ export function CodiumTargetPanel(props: TargetPanelProps) {
           <Text style={{ color: colors.foreground, fontSize: 20, fontWeight: "600" }}>VSCodium</Text>
         </View>
         <Text selectable style={{ color: colors.foregroundMuted, fontSize: 13 }} testID="codium-folder">{folder}</Text>
-        {props.target ? (
+        {target ? (
           <Text selectable style={{ color: colors.foreground, fontSize: 14 }} testID="codium-file">
-            {props.target.path}{props.target.line ? `:${props.target.line}` : ""}
+            {target.path}{target.line ? `:${target.line}` : ""}
           </Text>
         ) : null}
         <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 18 }}>
@@ -62,7 +66,7 @@ export function CodiumTargetPanel(props: TargetPanelProps) {
         </View>
         {actionMessage ? <Text accessibilityLiveRegion="polite" style={{ color: colors.foregroundMuted }}>{actionMessage}</Text> : null}
         {!embedded ? <Text style={{ color: colors.foregroundMuted, fontSize: 13 }}>Opens the files on this host in your browser.</Text> : null}
-        {props.target?.path.includes(":") && props.target.line ? (
+        {target?.path.includes(":") && target.line ? (
           <Text style={{ color: colors.foregroundMuted, fontSize: 13 }}>This filename contains a colon, so VSCodium opens the file without jumping to a line.</Text>
         ) : null}
       </View>

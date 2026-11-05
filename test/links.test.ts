@@ -1,9 +1,28 @@
 import { describe, expect, it } from "vitest";
-import { makeCodiumUrl } from "../client/web";
+import { makeCodiumUrl, resolveWorkspaceFile } from "../client/web";
 
 const origin = "https://codium.example.com";
 
 describe("Codium workspace and file navigation", () => {
+  it("resolves Paseo's relative file target against the actual linked-worktree directory", () => {
+    const folder = "/home/alex/.worktrees/project/feature one";
+    const path = resolveWorkspaceFile(folder, "src/naïve %20#?.py");
+    const result = new URL(makeCodiumUrl(origin, folder, { path, line: 42, column: 5 }));
+    const payload = new Map<string, string>(JSON.parse(result.searchParams.get("payload")!));
+    const target = new URL(payload.get("openFile")!);
+    expect(result.searchParams.get("folder")).toBe(folder);
+    expect(decodeURIComponent(target.pathname.slice(0, -5))).toBe(`${folder}/src/naïve %20#?.py`);
+  });
+
+  it("preserves already absolute file targets and joins root/trailing-slash workspaces", () => {
+    expect(resolveWorkspaceFile("/project", "/other/app.py")).toBe("/other/app.py");
+    expect(resolveWorkspaceFile("/", "app.py")).toBe("/app.py");
+    expect(resolveWorkspaceFile("/project/", "app.py")).toBe("/project/app.py");
+    expect(() => resolveWorkspaceFile("relative", "app.py")).toThrow();
+    expect(() => resolveWorkspaceFile("/project", "")).toThrow();
+    expect(() => resolveWorkspaceFile("/project", "a\0.py")).toThrow();
+  });
+
   it("opens the actual worktree directory without adding a file payload", () => {
     const folder = "/home/alex/.worktrees/project/feature one";
     const result = new URL(makeCodiumUrl(origin, folder));
