@@ -1,8 +1,19 @@
 import { describe, expect, it } from "vitest";
 import { parseBrokerMessage, parseCompanionMessage, validTarget } from "../shared/wire";
 import { targetSchema } from "../shared/rpc";
+import { createWindowIdentity } from "../companion/src/identity";
 
 describe("narrow companion wire protocol", () => {
+  it("uses independent valid window identities when Codium telemetry has only a shared placeholder", () => {
+    // The installed NullTelemetryService exposes env.sessionId='someValue.sessionId'.
+    // Window binding must not depend on that telemetry identifier.
+    const first = createWindowIdentity(); const second = createWindowIdentity();
+    expect(first).not.toBe(second);
+    for (const windowId of [first, second]) {
+      expect(parseCompanionMessage({ protocol: 1, type: "hello", bootstrapKey: "a".repeat(64), windowId,
+        connectionId: "connection_1234", workspace: "/project" }).type).toBe("hello");
+    }
+  });
   it.each([
     { type: "shell", protocol: 1, command: "ls" },
     { type: "state", protocol: 2, sequence: 1, dirty: false },

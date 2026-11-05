@@ -55,6 +55,8 @@ minutes if unclaimed. They are single-window capabilities, excluded from logs
 and persisted settings. The same live extension instance can reconnect its local
 socket; another window cannot reuse its binding. Restarting the plugin broker
 requires reconnecting the panel after preserving any edits.
+Each extension-host activation generates its own window identity; Codium's
+telemetry session ID is not used because telemetry-off builds can share a placeholder.
 
 The companion opens files through editor APIs and observes text documents,
 notebooks and custom-editor tab dirtiness. It supports Restricted Mode without

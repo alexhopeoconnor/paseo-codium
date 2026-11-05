@@ -4,6 +4,7 @@ import { BridgeClient } from "./bridge-client";
 import { BootstrapProvider } from "./bootstrap-provider";
 import { isDirty, observeEditorState } from "./editor-state";
 import { openFile } from "./navigation";
+import { createWindowIdentity } from "./identity";
 
 export function activate(context: vscode.ExtensionContext) {
   const folders = vscode.workspace.workspaceFolders;
@@ -13,7 +14,7 @@ export function activate(context: vscode.ExtensionContext) {
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 10);
   status.text = "$(link) Paseo"; status.tooltip = "Connecting this editor to its Paseo panel"; status.show();
   const bridge = new BridgeClient({
-    windowId: vscode.env.sessionId,
+    windowId: createWindowIdentity(),
     workspace: folders[0]!.uri.fsPath,
     dirty: isDirty,
     open: openFile,
