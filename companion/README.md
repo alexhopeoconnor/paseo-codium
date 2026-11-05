@@ -1,15 +1,11 @@
 # Paseo Codium Bridge
 
-This companion connects an individual Codium window to its Paseo workspace panel.
-It activates when Paseo opens its temporary, read-only `paseo-codium-session` URI.
-It opens requested files with Codium's editor APIs and reports editor readiness
-and unsaved state through an owner-only local Unix socket. Authentication remains
-in the browser and Authentik; this extension stores no browser credentials.
+Companion for [Paseo VSCodium](https://github.com/alexhopeoconnor/paseo-codium).
+It opens requested files and reports unsaved state for one embedded Codium window.
 
-The companion and Paseo plugin must run as the same Unix user on the same host.
-It works in Restricted Mode without executing repository configuration or
-trusting the workspace. It does not install language servers or run shell commands.
+Install the VSIX built from the same revision as the Paseo plugin. Both run as the
+same Unix user on the same host, communicating through an owner-only local socket.
+The extension activates automatically, works in Restricted Mode and needs no
+separate configuration. Browser authentication remains with your Codium endpoint.
 
-Build the VSIX with the repository's pinned Docker toolchain and install the
-verified artifact through the tracked workstation tooling. The root README
-describes protocol compatibility, lifecycle limitations and verification.
+See the repository README for building, installation and troubleshooting.
