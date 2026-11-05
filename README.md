@@ -40,11 +40,13 @@ The preview uses Paseo's supported file-read hooks and Markdown component; it is
 not the private built-in editor. It follows saved disk changes, reports deletion
 or read failures, and remains usable with an unconfigured Codium address. Relative
 Markdown images and links do not have the built-in file viewer's workspace-aware
-asset handling. Preview is limited to 512 KiB: oversized or unknown-size files
-are rejected before reading, and returned content is checked again before rendering.
-Paseo's SDK has no ranged read, so a file growing during a read may still transfer
-more than that limit before it is rejected. Rendered Markdown follows Paseo's image
-loading behavior, including remote images; those image resources are outside the
+asset handling. Preview is limited to 512 KiB: files reported as oversized or with
+invalid size metadata are rejected before reading, and returned content is checked
+again before rendering. Paseo can report zero before metadata is available, and
+its SDK has no ranged read. Missing metadata or a file growing during a read may
+therefore allow more than the limit to transfer before it is rejected. Rendered
+Markdown follows Paseo's image loading behavior, including remote images; those
+image resources are outside the
 text-size limit. Reading a preview never saves the file.
 Files with more than four Mermaid fenced blocks stay in Source mode because
 Paseo creates a separate diagram runtime for each block. The Preview toggle cannot
