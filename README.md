@@ -1,6 +1,6 @@
 # Paseo VSCodium
 
-Open the current Paseo workspace or file in a separately hosted VSCodium Web IDE. The plugin uses the workspace's actual directory, including linked Git worktrees.
+Open the current Paseo workspace or file in a separately hosted VSCodium Web IDE. The plugin uses the workspace's actual directory, including linked Git worktrees, and resolves Paseo's relative file paths against that directory.
 
 ## Setup
 
@@ -23,7 +23,7 @@ The plugin sends the workspace and requested file path/line in the destination U
 - A deep link navigates a complete workbench. It does not guarantee seamless reuse of an existing editor tab without reload.
 - If any part of a file path contains a colon, the plugin opens the exact file without a line jump. VSCodium's current goto parser interprets numeric colon-separated filename segments as cursor coordinates after URI decoding; percent encoding cannot remove that ambiguity.
 - File panels match the extensions and exact filenames declared in `index.client.tsx`; Paseo does not support a wildcard selector.
-- Hosted iframe support is implemented but disabled in this release until login, framing policy, clipboard, keyboard and reconnect checks pass. External opening remains available. Embedded edits cannot report unsaved state back to Paseo, so changes must be saved before closing an embedded panel.
+- Hosted iframe support is implemented but disabled in this release until login, framing policy, clipboard, keyboard and reconnect checks pass. External opening remains available. The current prototype has no bridge for reporting Codium's unsaved state to Paseo. Paseo provides an unsaved-tab API, but it needs that editor-side information before it can protect panel closure.
 
 VSCodium itself and any installed IDE extensions run with their configured server account's permissions. Keep its Workspace Trust policy and extension selection appropriate for the repositories being opened.
 
@@ -52,7 +52,7 @@ docker run --rm --network none --user "$(id -u):$(id -g)" \
 
 The tests decode independently generated URLs to check exact workspace/file paths and cursor positions, including reserved filename characters. They also exercise settings validation and the unconfigured state.
 
-The deployed release still needs browser verification against the selected VSCodium build, including authentication, linked-worktree navigation, editing/saving, and persisted plugin settings. Unit tests do not establish those deployment properties.
+Each deployment needs browser verification against its selected VSCodium build, including authentication, linked-worktree navigation, editing/saving, and persisted plugin settings. Record those results with the deployment configuration; unit tests do not establish them.
 
 ## References
 
