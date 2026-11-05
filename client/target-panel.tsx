@@ -1,10 +1,9 @@
 import { useSettings, useWorkspace, type PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { copyText, ExternalLink, Icon, Loading } from "@getpaseo/plugin/client/ui";
-import { useEffect, useRef, useState } from "react";
-import { Platform, Pressable, Text, View } from "react-native";
+import { useState } from "react";
+import { Pressable, Text, View } from "react-native";
 import { codiumSettings } from "../shared/settings";
-import { EMBEDDING_AVAILABLE } from "./features";
-import { makeCodiumUrl, mountCodiumFrame, resolveWorkspaceFile, type FileTarget } from "./web";
+import { makeCodiumUrl, resolveWorkspaceFile, type FileTarget } from "./web";
 
 interface TargetPanelProps extends PluginSurfaceProps {
   workspaceId: string;
@@ -34,7 +33,7 @@ export function CodiumTargetPanel(props: TargetPanelProps) {
     url = makeCodiumUrl(settings.values.codiumBaseUrl, folder, target);
   }
   catch (error) { return <Message {...props} text={messageOf(error)} />; }
-  const embedded = EMBEDDING_AVAILABLE && Platform.OS === "web" && settings.values.openMode === "embedded";
+  const embedded = false;
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.surface0 }} testID="codium-panel">
@@ -70,7 +69,6 @@ export function CodiumTargetPanel(props: TargetPanelProps) {
           <Text style={{ color: colors.foregroundMuted, fontSize: 13 }}>This filename contains a colon, so VSCodium opens the file without jumping to a line.</Text>
         ) : null}
       </View>
-      {embedded ? <EmbeddedView url={url} revision={props.revision} theme={theme} /> : null}
     </View>
   );
 }
@@ -82,22 +80,6 @@ function Message({ text, theme, openSettings }: Pick<TargetPanelProps, "theme" |
       <Pressable accessibilityRole="button" onPress={openSettings}>
         <Text style={{ color: theme.colors.accent }}>VSCodium settings</Text>
       </Pressable>
-    </View>
-  );
-}
-
-function EmbeddedView({ url, revision, theme }: { url: string; revision: number; theme: PluginSurfaceProps["theme"] }) {
-  const host = useRef<View>(null);
-  const [error, setError] = useState("");
-  useEffect(() => {
-    setError("");
-    try { return mountCodiumFrame(host.current, url); }
-    catch (cause) { setError(messageOf(cause)); }
-  }, [url, revision]);
-  return (
-    <View style={{ flex: 1 }}>
-      {error ? <Text style={{ padding: 12, color: theme.colors.statusDanger }}>{error}</Text> : null}
-      <View ref={host} style={{ flex: 1 }} testID="codium-frame" />
     </View>
   );
 }

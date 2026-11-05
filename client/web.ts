@@ -1,4 +1,7 @@
 import { codiumOriginSchema } from "../shared/settings";
+import { BOOTSTRAP_SCHEME } from "../shared/wire";
+export type { FileTarget } from "../shared/wire";
+import type { FileTarget } from "../shared/wire";
 
 // The cross-platform project deliberately has no DOM library. Browser capabilities stay here.
 declare const URL: {
@@ -10,7 +13,11 @@ declare const URL: {
   };
 };
 
-export interface FileTarget { path: string; line?: number; column?: number }
+declare const crypto: { randomUUID(): string };
+export function newRequestId(): string {
+  return typeof crypto !== "undefined" && typeof crypto.randomUUID === "function" ? crypto.randomUUID() :
+    `request_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`;
+}
 
 function absolutePath(path: string): void {
   if (!path.startsWith("/") || path.includes("\0")) {
@@ -52,14 +59,32 @@ export function makeCodiumUrl(base: string, folder: string, file?: FileTarget): 
   return url.href;
 }
 
+export function makeBootstrapUrl(base: string, folder: string, bootstrapKey: string): string {
+  if (!/^[a-f0-9]{64}$/.test(bootstrapKey)) throw new Error("Invalid editor pairing key.");
+  const url = new URL(makeCodiumUrl(base, folder));
+  url.searchParams.set("payload", JSON.stringify([["openFile", `${BOOTSTRAP_SCHEME}://pair/${bootstrapKey}/session.txt`]]));
+  return url.href;
+}
+
 interface Frame {
   title: string; src: string; allow: string; referrerPolicy: string;
   style: Record<string, string>;
   remove(): void;
 }
-declare const document: { createElement(tag: "iframe"): Frame };
+declare const document: {
+  createElement(tag: "iframe"): Frame;
+  activeElement: unknown;
+  addEventListener(type: string, listener: () => void, capture?: boolean): void;
+  removeEventListener(type: string, listener: () => void, capture?: boolean): void;
+};
+declare const window: {
+  addEventListener(type: string, listener: () => void): void;
+  removeEventListener(type: string, listener: () => void): void;
+  setTimeout(listener: () => void, delay: number): number;
+  clearTimeout(timer: number): void;
+};
 
-export function mountCodiumFrame(parent: unknown, url: string): () => void {
+export function mountCodiumFrame(parent: unknown, url: string, onFocusChange?: (focused: boolean) => void): () => void {
   if (!parent || typeof (parent as { appendChild?: unknown }).appendChild !== "function") {
     throw new Error("This client cannot embed VSCodium. Open it in your browser instead.");
   }
@@ -72,5 +97,25 @@ export function mountCodiumFrame(parent: unknown, url: string): () => void {
     border: "0", width: "100%", height: "100%", display: "block", flex: "1",
   });
   (parent as { appendChild(frame: Frame): void }).appendChild(frame);
-  return () => frame.remove();
+  let focusTimer: number | undefined;
+  let priorFocus = false;
+  const inspectFocus = () => {
+    const focused = document.activeElement === frame;
+    if (focused !== priorFocus) { priorFocus = focused; onFocusChange?.(focused); }
+  };
+  const deferFocus = () => {
+    inspectFocus();
+    if (focusTimer !== undefined) window.clearTimeout(focusTimer);
+    focusTimer = window.setTimeout(inspectFocus, 0);
+  };
+  window.addEventListener("blur", deferFocus);
+  window.addEventListener("focus", deferFocus);
+  document.addEventListener("focusin", deferFocus, true);
+  document.addEventListener("pointerdown", deferFocus, true);
+  return () => {
+    window.removeEventListener("blur", deferFocus); window.removeEventListener("focus", deferFocus);
+    document.removeEventListener("focusin", deferFocus, true); document.removeEventListener("pointerdown", deferFocus, true);
+    if (focusTimer !== undefined) window.clearTimeout(focusTimer);
+    frame.remove();
+  };
 }

@@ -52,7 +52,7 @@ export function CodiumSettingsScreen({ theme }: PluginSurfaceProps) {
             options={[{ label: "In a browser tab", value: "external" }, { label: "Inside Paseo", value: "embedded" }]}
             disabled={settings.saving || draft !== null}
             onValueChange={(openMode) => { void settings.save({ ...settings.values, openMode }, settings.revision); }}
-            hint="The browser option is available on every client. Save editor changes before closing an embedded panel."
+            hint="Embedded mode requires the matching Codium companion. Open panels apply changed settings only when you choose to switch."
           />
         ) : <SettingsRow label="Open VSCodium" hint="In a browser tab" />}
       </SettingsCard>

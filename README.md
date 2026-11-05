@@ -1,37 +1,118 @@
 # Paseo VSCodium
 
-Open the current Paseo workspace or file in a separately hosted VSCodium Web IDE. The plugin uses the workspace's actual directory, including linked Git worktrees, and resolves Paseo's relative file paths against that directory.
+Use a separately hosted VSCodium Web IDE from Paseo. External mode opens the
+workspace or file in your browser. Embedded mode uses one workspace editor panel
+and the matching Codium companion for file navigation, readiness and unsaved-state
+reporting without reloading the IDE for each file.
 
-## Setup
+## Installation and connection
 
-Run VSCodium Web independently, with access to the same absolute paths as the Paseo daemon. Protect its browser endpoint with authentication. Then install this plugin on Paseo 0.15.0 or later:
+Run VSCodium Web independently, with the same absolute filesystem paths as the
+Paseo daemon. Protect its public browser endpoint with authentication. Install this
+plugin on Paseo 0.15.0 or later:
 
 ```bash
 paseo plugin add github:alexhopeoconnor/paseo-codium
 ```
 
-Open the plugin's settings and enter its plain HTTPS origin, for example `https://codium.example.com`. Addresses containing credentials, a path, query parameters or a fragment are rejected. The initial empty address leaves the plugin unconfigured; no connection is attempted.
+Set the plugin's **Connection** address to a plain HTTPS origin such as
+`https://codium.example.com`. An empty address remains safely unconfigured.
+External mode is the default and requires no companion. Choose **Inside Paseo**
+only after installing the matching companion and verifying your browser setup.
 
-From a workspace, use Command Center → **Open workspace in VSCodium**. Supported files offer **VSCodium** in **Open with**. The panel provides a browser link and a copy-link action. Your VSCodium endpoint handles its own login.
+The companion ID is `alexhopeoconnor.paseo-codium-bridge`, version `0.1.0`, using
+protocol `1`. It is packaged as `paseo-codium-bridge.vsix` from the same signed
+source revision as the plugin. Install the verified VSIX with Codium's server
+launcher, using the same server/user/extension directories as the running service.
+The workstation deployment tooling pins, checks and installs both outputs.
 
-The plugin sends the workspace and requested file path/line in the destination URL. It does not read file contents, run project commands, install language servers, manage the IDE service or store authentication secrets. Its small server entry registers host-scoped settings shared by the host's authorized clients.
+From **Command Center → Open workspace in VSCodium**, the workspace panel opens
+the actual checkout or linked-worktree directory. Supported files offer
+**VSCodium** under **Open with**. In embedded web mode their lightweight file
+panel offers **Open in workspace editor**; all file requests go to that workspace
+panel. External file opening and copy-link remain available.
 
-## Navigation limits
+## Authentication and editor sessions
 
-- The two applications must see matching absolute filesystem paths. This initial implementation targets Unix-style absolute paths.
-- Paseo 0.15 selects its built-in panel for file-at-line links, overriding saved associations. A plugin file panel does not intercept every existing link. Choosing the VSCodium panel explicitly preserves the target passed to it.
-- A deep link navigates a complete workbench. It does not guarantee seamless reuse of an existing editor tab without reload.
-- If any part of a file path contains a colon, the plugin opens the exact file without a line jump. VSCodium's current goto parser interprets numeric colon-separated filename segments as cursor coordinates after URI decoding; percent encoding cannot remove that ambiguity.
-- File panels match the extensions and exact filenames declared in `index.client.tsx`; Paseo does not support a wildcard selector.
-- Hosted iframe support is implemented but disabled in this release until login, framing policy, clipboard, keyboard and reconnect checks pass. External opening remains available. The current prototype has no bridge for reporting Codium's unsaved state to Paseo. Paseo provides an unsaved-tab API, but it needs that editor-side information before it can protect panel closure.
+Your browser loads Codium directly in the iframe. Existing browser cookies and
+your endpoint's normal authentication apply. The plugin does not log into Codium
+or store Authentik credentials. If interactive login cannot display in the frame,
+choose **Sign in in browser**, return, then **Reconnect**. The sign-in action uses
+the clean origin and never transfers the temporary editor pairing URL to another
+tab. A loading timeout means readiness is unconfirmed; it is not proof of an
+authentication failure. Only the companion handshake establishes readiness.
 
-VSCodium itself and any installed IDE extensions run with their configured server account's permissions. Keep its Workspace Trust policy and extension selection appropriate for the repositories being opened.
+The TypeScript backend brokers editor commands over a user-owned Unix socket at
+`$XDG_RUNTIME_DIR/paseo-codium/bridge.sock` (or `/run/user/UID` on Linux when the
+variable is absent). Directory and socket modes are `0700` and `0600`. No public
+port or separate service is introduced. The browser uses Paseo's authenticated
+RPC connection and a private panel credential; the companion runs as the same
+host user. This is not a sandbox against other processes belonging to that user.
 
-## Development
+An initial, read-only `paseo-codium-session` virtual document binds the exact
+Codium window receiving the iframe URL. Pairing capabilities expire after two
+minutes if unclaimed. They are single-window capabilities, excluded from logs
+and persisted settings. The same live extension instance can reconnect its local
+socket; another window cannot reuse its binding. Restarting the plugin broker
+requires reconnecting the panel after preserving any edits.
 
-There are no production package dependencies or manifest preparation commands. Paseo supplies its SDK, React, React Native and Zod and compiles the source when loading it. Host npm is not required for Git/local installation.
+The companion opens files through editor APIs and observes text documents,
+notebooks and custom-editor tab dirtiness. It supports Restricted Mode without
+executing repository configuration, running shell commands or trusting folders.
+Its temporary bootstrap document creates no project files and closes only its
+own matching tab. Changing the window's workspace folders invalidates its binding.
 
-The development lock is checked using the pinned Docker image below. Run from this checkout:
+## Unsaved changes and lifecycle limits
+
+The companion reports dirty state to Paseo's native modified-tab API. Unknown or
+disconnected editor state remains protected; it is never treated as clean merely
+because a connection timed out. Because removing a cross-origin iframe can bypass
+the editor's normal page-unload confirmation, the Paseo tab is also conservatively
+protected while the iframe owns focus. After focus returns to Paseo, a fresh
+clean-state snapshot clears that protection. Each state RPC performs a bounded,
+request-correlated round trip to the companion; cached clean state cannot satisfy
+that freshness check. This can produce a close/reload
+confirmation for a focused editor that has no unsaved files.
+
+Reconnect and connection-setting changes require an explicit discard choice
+when state is dirty or unknown. Saving files remains Codium's responsibility;
+the plugin's modified indicator does not save them. Abrupt browser/process
+termination still relies on Codium's own recovery mechanisms.
+
+Known Paseo 0.15.0 boundaries:
+
+- Clean background panels may be unmounted after several tab switches. The SDK
+  has no permanent keep-alive API. The panel creates a new binding when remounted
+  and restores its last successfully opened target; Codium owns other workbench
+  and terminal restoration. Do not assume every background terminal remains
+  continuously attached. Dirty/unknown panels use the native retention flag.
+- The file launcher tab remains because the SDK has no close-tab or general
+  file-interception API. Clicking its explicit action avoids replaying a file
+  request just because Paseo remounts a launcher.
+- Existing file-at-line links can force Paseo's built-in panel despite saved
+  associations. This plugin cannot override every chat link.
+- Native clients use external opening. Embedded mode is a web-client capability.
+- File selectors use declared extensions and exact filenames; no wildcard
+  selector is available in this SDK.
+- The workspace folder is navigation context, not a filesystem sandbox. Explicit
+  absolute file targets may be outside it. Both applications run with their host
+  account's permissions.
+- Connected editor navigation preserves colons and reserved filename characters.
+  External URLs retain the upstream colon limitation: a colon-containing path
+  opens the exact file without a cursor jump.
+
+Browser authentication, clipboard, keyboard, focus, dirty-close behaviour and
+clean-panel restoration must be verified against the deployed Paseo/Codium builds.
+Automated protocol tests do not establish those browser results.
+
+## Development and packaging
+
+There are no production package dependencies or manifest preparation commands.
+Paseo supplies the SDK, React, React Native and Zod and compiles the plugin source.
+The companion bundles its own code and uses Codium's `vscode` API and Node builtins.
+Host npm is not required for plugin or VSIX installation.
+
+Use the pinned Docker image from this checkout:
 
 ```bash
 docker run --rm --user "$(id -u):$(id -g)" \
@@ -50,15 +131,30 @@ docker run --rm --network none --user "$(id -u):$(id -g)" \
   npm test
 ```
 
-The tests decode independently generated URLs to check exact workspace/file paths and cursor positions, including reserved filename characters. They also exercise settings validation and the unconfigured state.
+The root lockfile also pins TypeScript, esbuild and VS Code API development types.
+Package the companion offline using the same container with an additional writable
+output mount outside the source tree:
 
-Each deployment needs browser verification against its selected VSCodium build, including authentication, linked-worktree navigation, editing/saving, and persisted plugin settings. Record those results with the deployment configuration; unit tests do not establish them.
+```bash
+npm run build:companion -- --out-dir /output
+```
+
+This produces exactly `paseo-codium-bridge.vsix` and `companion.json`. The packer
+uses fixed ZIP timestamps, regular `0644` files, an explicit file list and no
+installation hooks. The source tree is not modified. The deployment builder adds
+source/build provenance and hashes; generated VSIX files do not belong in Git.
+
+Tests cover URL fidelity, strict RPC/wire validation, pairing expiry and replay,
+simultaneous claims, independent windows, request deduplication, stale dirty-state
+updates, socket ownership/transport limits, target queues and cursor ranges.
 
 ## References
 
 - [Paseo plugin reference](https://paseo.sh/docs/plugins/reference)
+- [VS Code extension APIs](https://code.visualstudio.com/api/references/vscode-api)
+- [Filesystem activation](https://code.visualstudio.com/api/references/activation-events#onFileSystem)
+- [Workspace Trust](https://code.visualstudio.com/api/extension-guides/workspace-trust)
 - [VSCodium Web Host](https://github.com/VSCodium/vscodium/blob/master/docs/others.md)
-- [VS Code workbench URL handling](https://github.com/microsoft/vscode/blob/main/src/vs/code/browser/workbench/workbench.ts)
-- [VS Code file/line payload handling](https://github.com/microsoft/vscode/blob/main/src/vs/workbench/services/environment/browser/environmentService.ts)
 
-Editor Plus was inspected as a reference for Paseo's documented APIs; this plugin is an independent implementation.
+Editor Plus was inspected as a reference for Paseo's documented APIs; this plugin
+and its companion are independent implementations.
