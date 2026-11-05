@@ -14,6 +14,10 @@ declare const URL: {
 };
 
 declare const crypto: { randomUUID(): string };
+declare const performance: { timeOrigin: number };
+export function browserDocumentEpoch(): number {
+  return typeof performance === "undefined" ? 0 : performance.timeOrigin;
+}
 export function newRequestId(): string {
   return typeof crypto !== "undefined" && typeof crypto.randomUUID === "function" ? crypto.randomUUID() :
     `request_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`;
@@ -74,9 +78,40 @@ interface Frame {
 declare const document: {
   createElement(tag: "iframe"): Frame;
   activeElement: unknown;
+  visibilityState: string;
   addEventListener(type: string, listener: () => void, capture?: boolean): void;
   removeEventListener(type: string, listener: () => void, capture?: boolean): void;
 };
+interface VisiblePanel {
+  isConnected: boolean;
+  getBoundingClientRect(): { width: number; height: number };
+}
+declare const IntersectionObserver: {
+  new (callback: (entries: { isIntersecting: boolean }[]) => void): {
+    observe(target: VisiblePanel): void;
+    disconnect(): void;
+  };
+};
+
+/** Wait for the actual web panel, not a retained hidden tab, before focusing Codium. */
+export function panelHasVisibleBounds(parent: unknown): boolean {
+  if (!parent || typeof (parent as VisiblePanel).getBoundingClientRect !== "function") return false;
+  const panel = parent as VisiblePanel, bounds = panel.getBoundingClientRect();
+  return panel.isConnected && bounds.width > 0 && bounds.height > 0 && document.visibilityState === "visible";
+}
+
+export function observePanelVisibility(parent: unknown, changed: (visible: boolean) => void): () => void {
+  if (!parent || typeof (parent as VisiblePanel).getBoundingClientRect !== "function" || typeof IntersectionObserver === "undefined") return () => {};
+  const panel = parent as VisiblePanel;
+  let intersecting = false;
+  const inspect = () => {
+    changed(intersecting && panelHasVisibleBounds(panel));
+  };
+  const observer = new IntersectionObserver((entries) => { intersecting = entries.some((entry) => entry.isIntersecting); inspect(); });
+  observer.observe(panel);
+  document.addEventListener("visibilitychange", inspect);
+  return () => { observer.disconnect(); document.removeEventListener("visibilitychange", inspect); };
+}
 declare const window: {
   addEventListener(type: string, listener: () => void): void;
   removeEventListener(type: string, listener: () => void): void;

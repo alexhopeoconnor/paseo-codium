@@ -12,6 +12,7 @@ interface TargetPanelProps extends PluginSurfaceProps {
   target?: FileTarget;
   openSettings(): void;
   openEditor?(target: FileTarget): void;
+  navigationMessage?: string;
 }
 
 export function CodiumTargetPanel(props: TargetPanelProps) {
@@ -74,6 +75,7 @@ export function CodiumTargetPanel(props: TargetPanelProps) {
           </Pressable>
         </View>
         {actionMessage ? <Text accessibilityLiveRegion="polite" style={{ color: colors.foregroundMuted }}>{actionMessage}</Text> : null}
+        {props.navigationMessage ? <Text accessibilityLiveRegion="polite" style={{ color: colors.statusDanger }}>{props.navigationMessage}</Text> : null}
         <Text style={{ color: colors.foregroundMuted, fontSize: 13 }}>
           {opensEditorTab ? "Opens this file in the workspace’s VSCodium tab in Paseo." : "Opens the files on this host in your browser."}
         </Text>

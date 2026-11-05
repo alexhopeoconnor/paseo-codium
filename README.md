@@ -28,10 +28,10 @@ The workstation deployment tooling pins, checks and installs both outputs.
 
 From **Command Center → Open workspace in VSCodium**, the workspace panel opens
 the actual checkout or linked-worktree directory. Supported files offer
-**VSCodium** under **Open with**. In embedded web mode their lightweight file
-panel's primary action is **Open in VSCodium tab**, which sends the file to the
-shared workspace editor inside Paseo. **Open in browser** and **Copy browser link**
-remain secondary actions for standalone opening.
+**VSCodium** under **Open with**. In embedded web mode opening a supported file
+automatically focuses the shared VSCodium workspace tab and sends it the file.
+The lightweight file panel retains **Open in VSCodium tab** for retrying, plus
+**Open in browser** and **Copy browser link** for standalone opening.
 
 ## Authentication and editor sessions
 
@@ -97,11 +97,17 @@ Known Paseo 0.15.0 boundaries:
   and restores its last successfully opened target; Codium owns other workbench
   and terminal restoration. Do not assume every background terminal remains
   continuously attached. Dirty/unknown panels use the native retention flag.
-- Opening a supported file with this plugin first shows its launcher; click
-  **Open in VSCodium tab** to send it to the workspace editor. This extra click is
-  currently required. The launcher tab remains because the SDK has no close-tab
-  or general file-interception API. Explicit navigation avoids replaying a file
-  request just because Paseo remounts the launcher.
+- The file launcher tab remains because the SDK has no close-tab API. Automatic
+  forwarding consumes each positive host file-open revision once, including an
+  intentional second click on the same file. Hidden launchers wait until visible;
+  remounts and plugin reloads do not replay a recorded attempt. Browser-restored
+  revision-zero tabs stay quiet until another file-open action. When upgrading
+  from a release without these markers, an unhandled visible file tab can forward
+  once. Merely selecting an already handled launcher offers its retry button.
+- File opens in external or unconfigured mode are consumed without redirecting;
+  changing to embedded mode later does not reopen those old requests. Automatic
+  forwarding never launches an external browser window. Failed attempts require
+  the retry action or another file click.
 - Existing file-at-line links can force Paseo's built-in panel despite saved
   associations. This plugin cannot override every chat link.
 - Native clients use external opening. Embedded mode is a web-client capability.
