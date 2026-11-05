@@ -51,10 +51,18 @@ host user. This is not a sandbox against other processes belonging to that user.
 
 An initial, read-only `paseo-codium-session` virtual document binds the exact
 Codium window receiving the iframe URL. Pairing capabilities expire after two
-minutes if unclaimed. They are single-window capabilities, excluded from logs
-and persisted settings. The same live extension instance can reconnect its local
+minutes if unclaimed. They are single-window capabilities, omitted from this
+plugin and companion's logs and persisted settings. The bootstrap URI can still
+appear in browser/workbench history or upstream diagnostics; it is not an
+Authentik credential and cannot bind another window after it is claimed.
+The same live extension instance can reconnect its local
 socket; another window cannot reuse its binding. Restarting the plugin broker
 requires reconnecting the panel after preserving any edits.
+
+Sessions expire after 30 minutes without panel RPC activity, so a suspended
+browser may require explicit reconnection. A failed file request displays a retry
+error rather than replaying later; pending requests do not survive a full browser
+refresh.
 Each extension-host activation generates its own window identity; Codium's
 telemetry session ID is not used because telemetry-off builds can share a placeholder.
 
