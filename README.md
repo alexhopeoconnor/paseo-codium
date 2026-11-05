@@ -30,8 +30,25 @@ From **Command Center → Open workspace in VSCodium**, the workspace panel open
 the actual checkout or linked-worktree directory. Supported files offer
 **VSCodium** under **Open with**. In embedded web mode opening a supported file
 automatically focuses the shared VSCodium workspace tab and sends it the file.
-The lightweight file panel retains **Open in VSCodium tab** for retrying, plus
-**Open in browser** and **Copy browser link** for standalone opening.
+The remaining file tab shows a read-only preview with a compact toolbar:
+**Open in VSCodium tab** for retrying, plus **Open in browser**, **Copy link** and
+**Settings**. Markdown files offer **Preview / Source**; other text files display
+selectable monospace source. HTML and SVG stay source text, and MDX is rendered
+as Markdown without compiling or executing its components.
+
+The preview uses Paseo's supported file-read hooks and Markdown component; it is
+not the private built-in editor. It follows saved disk changes, reports deletion
+or read failures, and remains usable with an unconfigured Codium address. Relative
+Markdown images and links do not have the built-in file viewer's workspace-aware
+asset handling. Preview is limited to 512 KiB: oversized or unknown-size files
+are rejected before reading, and returned content is checked again before rendering.
+Paseo's SDK has no ranged read, so a file growing during a read may still transfer
+more than that limit before it is rejected. Rendered Markdown follows Paseo's image
+loading behavior, including remote images; those image resources are outside the
+text-size limit. Reading a preview never saves the file.
+Files with more than four Mermaid fenced blocks stay in Source mode because
+Paseo creates a separate diagram runtime for each block. The Preview toggle cannot
+override this limit; header counting is deliberately conservative for nested examples.
 
 ## Authentication and editor sessions
 

@@ -2,6 +2,7 @@ import { useSettings, useWorkspace, type PluginFilePanelProps } from "@getpaseo/
 import { useEffect, useRef, useState } from "react";
 import { Platform, View } from "react-native";
 import { CodiumTargetPanel } from "./target-panel";
+import { FilePreview } from "./file-preview";
 import type { FileTarget } from "../shared/wire";
 import { codiumSettings } from "../shared/settings";
 import { forwardFileNavigation } from "./editor-session";
@@ -28,7 +29,7 @@ export function CodiumFilePanel(props: PluginFilePanelProps & { openSettings(): 
     const current = latest.current;
     let resolved: FileTarget;
     try { resolved = { path: resolveWorkspaceFile(folder, path), line, lineEnd }; }
-    catch { return; } // The fallback card displays invalid path errors.
+    catch { return; } // The toolbar displays invalid path errors.
     let enabled = EMBEDDING_AVAILABLE && settings.status === "ready" && mode === "embedded" && !!origin;
     try { if (enabled) makeCodiumUrl(origin, folder, resolved); } catch { enabled = false; }
     const result = forwardFileNavigation({
@@ -45,5 +46,6 @@ export function CodiumFilePanel(props: PluginFilePanelProps & { openSettings(): 
   }, [settings.status, folder, path, line, lineEnd, origin, mode, visible, props.revision, props.host.id, props.workspaceId]);
   return <View ref={panel} style={{ flex: 1 }}>
     <CodiumTargetPanel {...props} target={target} navigationMessage={navigationMessage} />
+    <FilePreview key={`${props.host.id}:${props.workspaceId}:${props.file.path}`} file={props.file} theme={props.theme} />
   </View>;
 }
