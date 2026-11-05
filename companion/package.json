@@ -3,13 +3,26 @@
   "displayName": "Paseo Codium Bridge",
   "description": "Connect this Codium window to its Paseo workspace editor panel.",
   "publisher": "alexhopeoconnor",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "license": "MIT",
-  "engines": { "vscode": "^1.143.0" },
+  "engines": {
+    "vscode": "^1.143.0"
+  },
   "main": "./dist/extension.js",
-  "extensionKind": ["workspace"],
-  "activationEvents": ["onFileSystem:paseo-codium-session"],
-  "capabilities": { "untrustedWorkspaces": { "supported": true } },
+  "extensionKind": [
+    "workspace"
+  ],
+  "activationEvents": [
+    "onFileSystem:paseo-codium-session"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": true
+    }
+  },
   "paseoCodiumProtocolVersion": 1,
-  "repository": { "type": "git", "url": "https://github.com/alexhopeoconnor/paseo-codium.git" }
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/alexhopeoconnor/paseo-codium.git"
+  }
 }

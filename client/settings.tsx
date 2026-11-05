@@ -3,7 +3,6 @@ import { SettingsAction, SettingsCard, SettingsInput, SettingsRow, SettingsSecti
 import { useState } from "react";
 import { Text } from "react-native";
 import { codiumSettings, connectionSchema } from "../shared/settings";
-import { EMBEDDING_AVAILABLE } from "./features";
 
 export function CodiumSettingsScreen({ theme }: PluginSurfaceProps) {
   const settings = useSettings(codiumSettings);
@@ -46,15 +45,13 @@ export function CodiumSettingsScreen({ theme }: PluginSurfaceProps) {
         {conflict ? <SettingsAction label="Settings changed on another client" actionLabel="Reload saved settings"
           hint="Reload to discard this draft and edit the latest saved connection."
           onPress={() => { setDraft(null); void settings.reload(); }} /> : null}
-        {EMBEDDING_AVAILABLE ? (
-          <SettingsSelect
-            label="Open VSCodium" value={settings.values.openMode}
-            options={[{ label: "In a browser tab", value: "external" }, { label: "Inside Paseo", value: "embedded" }]}
-            disabled={settings.saving || draft !== null}
-            onValueChange={(openMode) => { void settings.save({ ...settings.values, openMode }, settings.revision); }}
-            hint="Embedded mode requires the matching Codium companion. Open panels apply changed settings only when you choose to switch."
-          />
-        ) : <SettingsRow label="Open VSCodium" hint="In a browser tab" />}
+        <SettingsSelect
+          label="Open VSCodium" value={settings.values.openMode}
+          options={[{ label: "In a browser tab", value: "external" }, { label: "Inside Paseo", value: "embedded" }]}
+          disabled={settings.saving || draft !== null}
+          onValueChange={(openMode) => { void settings.save({ ...settings.values, openMode }, settings.revision); }}
+          hint="Embedded mode requires the matching Codium companion. Open panels apply changed settings only when you choose to switch."
+        />
       </SettingsCard>
       <Text style={{ color: theme.colors.foregroundMuted, fontSize: 13, marginTop: 12 }}>
         Choose an instance that can access the same project paths as this Paseo host. Its existing login protects access.

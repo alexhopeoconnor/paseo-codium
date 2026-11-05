@@ -3,14 +3,14 @@ import { copyText, ExternalLink } from "@getpaseo/plugin/client/ui";
 import { useState } from "react";
 import { Platform, Pressable, Text, View } from "react-native";
 import { codiumSettings } from "../shared/settings";
-import { EMBEDDING_AVAILABLE } from "./features";
+import { editorConnectionKey } from "./editor-session";
 import { makeCodiumUrl, resolveWorkspaceFile, type FileTarget } from "./web";
 
 interface TargetPanelProps extends PluginSurfaceProps {
   workspaceId: string;
   target: FileTarget;
   openSettings(): void;
-  openEditor(target: FileTarget): void;
+  openEditor(target: FileTarget, connectionKey: string): void;
   navigationMessage?: string;
 }
 
@@ -31,7 +31,8 @@ export function CodiumTargetPanel(props: TargetPanelProps) {
       url = makeCodiumUrl(settings.values.codiumBaseUrl, folder, target);
     } catch (error) { problem = messageOf(error); }
   }
-  const embedded = !!url && EMBEDDING_AVAILABLE && Platform.OS === "web" &&
+  const connectionKey = settings.status === "ready" ? editorConnectionKey(settings.values) : "";
+  const embedded = !!url && Platform.OS === "web" &&
     settings.status === "ready" && settings.values.openMode === "embedded";
 
   return <View style={{ backgroundColor: colors.surface0, paddingHorizontal: 14, paddingVertical: 10, gap: 8 }} testID="codium-panel">
@@ -40,7 +41,7 @@ export function CodiumTargetPanel(props: TargetPanelProps) {
     </Text>
     <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 18 }}>
       {embedded ? <Pressable accessibilityRole="button" testID="codium-open-tab" onPress={() => {
-        try { props.openEditor(target); setActionMessage(""); }
+        try { props.openEditor(target, connectionKey); setActionMessage(""); }
         catch { setActionMessage("The editor could not accept this request. Try again after it connects."); }
       }}>
         <Text style={{ color: colors.accent, fontWeight: "600" }}>Open in VSCodium tab</Text>

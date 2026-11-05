@@ -1,7 +1,7 @@
 {
   "name": "paseo-codium",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Open Paseo workspaces and files in a separately hosted VSCodium Web IDE.",
   "type": "module",
   "license": "MIT",
@@ -10,10 +10,8 @@
     "paseo-plugin.json",
     "OVERVIEW.md",
     "OVERVIEW.*.md",
-    "index.client.ts",
     "index.client.tsx",
     "index.server.ts",
-    "index.server.tsx",
     "client/",
     "server/",
     "shared/"
@@ -33,7 +31,7 @@
     "react": "19.1.0",
     "react-native": "0.81.5",
     "typescript": "5.9.3",
-    "vitest": "3.2.7",
+    "vitest": "5.1.0",
     "zod": "4.6.7"
   }
 }

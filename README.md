@@ -9,7 +9,7 @@ reporting without reloading the IDE for each file.
 
 Run VSCodium Web independently, with the same absolute filesystem paths as the
 Paseo daemon. Protect its public browser endpoint with authentication. Install this
-plugin on Paseo 0.15.0 or later:
+plugin on Paseo 0.15.x:
 
 ```bash
 paseo plugin add github:alexhopeoconnor/paseo-codium
@@ -20,7 +20,7 @@ Set the plugin's **Connection** address to a plain HTTPS origin such as
 External mode is the default and requires no companion. Choose **Inside Paseo**
 only after installing the matching companion and verifying your browser setup.
 
-The companion ID is `alexhopeoconnor.paseo-codium-bridge`, version `0.1.0`, using
+The companion ID is `alexhopeoconnor.paseo-codium-bridge`, version `0.1.1`, using
 protocol `1`. It is packaged as `paseo-codium-bridge.vsix` from the same signed
 source revision as the plugin. Install the verified VSIX with Codium's server
 launcher, using the same server/user/extension directories as the running service.
@@ -46,8 +46,7 @@ again before rendering. Paseo can report zero before metadata is available, and
 its SDK has no ranged read. Missing metadata or a file growing during a read may
 therefore allow more than the limit to transfer before it is rejected. Rendered
 Markdown follows Paseo's image loading behavior, including remote images; those
-image resources are outside the
-text-size limit. Reading a preview never saves the file.
+image resources are outside the text-size limit. Reading a preview never saves the file.
 Files with more than four Mermaid fenced blocks stay in Source mode because
 Paseo creates a separate diagram runtime for each block. The Preview toggle cannot
 override this limit; header counting is deliberately conservative for nested examples.
@@ -80,9 +79,15 @@ socket; another window cannot reuse its binding. Restarting the plugin broker
 requires reconnecting the panel after preserving any edits.
 
 Sessions expire after 30 minutes without panel RPC activity, so a suspended
-browser may require explicit reconnection. A failed file request displays a retry
-error rather than replaying later; pending requests do not survive a full browser
-refresh.
+browser may require explicit reconnection. A failed file request displays a retry error. Pending requests expire after five
+minutes and do not survive a full browser refresh. Queues and saved targets are
+qualified by the intended Codium origin and opening mode: a retained editor on
+old connection settings cannot consume a new connection's file requests. Apply
+changed settings explicitly, preserving the existing dirty/unknown-state guard.
+The SDK cannot distinguish an explicit close from clean-panel eviction, so an
+immediate reopen can retain a recent pending request; the five-minute bound limits
+that behavior. Obsolete unqualified saved targets are not restored by the plugin;
+Codium retains its own workbench history.
 Each extension-host activation generates its own window identity; Codium's
 telemetry session ID is not used because telemetry-off builds can share a placeholder.
 
@@ -109,7 +114,13 @@ when state is dirty or unknown. Saving files remains Codium's responsibility;
 the plugin's modified indicator does not save them. Abrupt browser/process
 termination still relies on Codium's own recovery mechanisms.
 
-Known Paseo 0.15.0 boundaries:
+Known Paseo 0.15.x boundaries (new minor releases require a compatibility review):
+
+- Paseo can mount the default viewer before its file-handler chooser is confirmed.
+  The plugin currently treats that mount as a file-open intent, so Codium may open
+  before **Use**, including when the chooser is later dismissed. The public SDK
+  exposes no committed-choice signal. This known issue is not resolved by the
+  current implementation; automatic forwarding is not confirmation-aware.
 
 - Clean background panels may be unmounted after several tab switches. The SDK
   has no permanent keep-alive API. The panel creates a new binding when remounted
@@ -185,6 +196,9 @@ source/build provenance and hashes; generated VSIX files do not belong in Git.
 Tests cover URL fidelity, strict RPC/wire validation, pairing expiry and replay,
 simultaneous claims, independent windows, request deduplication, stale dirty-state
 updates, socket ownership/transport limits, target queues and cursor ranges.
+Companion tests exercise disposal during connection/file reads, retry after initial
+transport failure, reconnect identity and suppression of late replies. Maintenance
+guard tests live with the shared deployment tooling.
 
 ## References
 

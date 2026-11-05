@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseBrokerMessage, parseCompanionMessage, validTarget } from "../shared/wire";
+import { MAX_FRAME_BYTES, MessageFramer, parseBrokerMessage, parseCompanionMessage, validTarget } from "../shared/wire";
 import { targetSchema } from "../shared/rpc";
 import { createWindowIdentity } from "../companion/src/identity";
 
@@ -37,5 +37,28 @@ describe("narrow companion wire protocol", () => {
     expect(validTarget(target)).toBe(true);
     expect(targetSchema.parse(target)).toEqual(target);
     expect(parseBrokerMessage({ protocol: 1, type: "openFile", requestId: "request_1234", target })).toEqual({ protocol: 1, type: "openFile", requestId: "request_1234", target });
+  });
+});
+
+describe("newline stream framing", () => {
+  it("accepts coalesced valid frames whose aggregate exceeds one frame limit", () => {
+    const framer = new MessageFramer();
+    const line = "x".repeat(MAX_FRAME_BYTES);
+    expect(framer.push(Buffer.from(line + "\n" + line + "\n")).map((frame) => Buffer.from(frame).toString()))
+      .toEqual([line, line]);
+  });
+  it("preserves UTF-8 across split frames and reads the following partial message", () => {
+    const framer = new MessageFramer(), line = Buffer.from("naïve ✓\nsecond\n");
+    expect(framer.push(line.subarray(0, 3))).toEqual([]);
+    expect(framer.push(line.subarray(3, 12)).map((frame) => Buffer.from(frame).toString())).toEqual(["naïve ✓"]);
+    expect(framer.push(line.subarray(12)).map((frame) => Buffer.from(frame).toString())).toEqual(["second"]);
+  });
+  it("rejects an oversized complete frame", () => {
+    expect(() => new MessageFramer().push(Buffer.from("x".repeat(MAX_FRAME_BYTES + 1) + "\n"))).toThrow("too large");
+  });
+  it("rejects oversized partial frames across separate reads", () => {
+    const framer = new MessageFramer();
+    framer.push(Buffer.alloc(MAX_FRAME_BYTES, 65));
+    expect(() => framer.push(Buffer.from("x"))).toThrow("too large");
   });
 });

@@ -24,9 +24,9 @@ export default function contribute(client: PluginClientContext) {
         extensions: ["md", "mdx", "txt", "py", "pyi", "ts", "tsx", "js", "jsx", "mjs", "cjs", "json", "jsonc", "yaml", "yml", "toml", "ini", "conf", "sh", "bash", "html", "css", "scss", "svg", "xml", "sql", "go", "rs", "c", "cpp", "cc", "h", "hpp", "cs", "java", "kt", "rb", "php", "vue", "svelte", "tex", "typ"],
         filenames: ["Dockerfile", "Containerfile", "Makefile", "Justfile", ".gitignore", ".gitattributes", ".editorconfig", "LICENSE"],
       },
-      Component: (props: PluginFilePanelProps) => <CodiumFilePanel {...props} openSettings={openSettings} openEditor={(target) => {
+      Component: (props: PluginFilePanelProps) => <CodiumFilePanel {...props} openSettings={openSettings} openEditor={(target, connectionKey) => {
         const queue = editorQueue(props.host.id, props.workspaceId), requestId = newRequestId();
-        queue.route({ requestId, target }, () => client.openPanel("codium", { workspaceId: props.workspaceId }));
+        queue.route({ requestId, target, connectionKey }, () => client.openPanel("codium", { workspaceId: props.workspaceId }));
       }} />,
     }),
   ];

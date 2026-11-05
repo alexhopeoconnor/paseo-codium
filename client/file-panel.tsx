@@ -5,11 +5,10 @@ import { CodiumTargetPanel } from "./target-panel";
 import { FilePreview } from "./file-preview";
 import type { FileTarget } from "../shared/wire";
 import { codiumSettings } from "../shared/settings";
-import { forwardFileNavigation } from "./editor-session";
-import { EMBEDDING_AVAILABLE } from "./features";
+import { editorConnectionKey, forwardFileNavigation } from "./editor-session";
 import { browserDocumentEpoch, makeCodiumUrl, observePanelVisibility, panelHasVisibleBounds, resolveWorkspaceFile } from "./web";
 
-export function CodiumFilePanel(props: PluginFilePanelProps & { openSettings(): void; openEditor(target: FileTarget): void }) {
+export function CodiumFilePanel(props: PluginFilePanelProps & { openSettings(): void; openEditor(target: FileTarget, connectionKey: string): void }) {
   const settings = useSettings(codiumSettings);
   const folder = useWorkspace(props.workspaceId, (workspace) => workspace.directory);
   const panel = useRef<View | null>(null);
@@ -30,7 +29,7 @@ export function CodiumFilePanel(props: PluginFilePanelProps & { openSettings(): 
     let resolved: FileTarget;
     try { resolved = { path: resolveWorkspaceFile(folder, path), line, lineEnd }; }
     catch { return; } // The toolbar displays invalid path errors.
-    let enabled = EMBEDDING_AVAILABLE && settings.status === "ready" && mode === "embedded" && !!origin;
+    let enabled = settings.status === "ready" && mode === "embedded" && !!origin;
     try { if (enabled) makeCodiumUrl(origin, folder, resolved); } catch { enabled = false; }
     const result = forwardFileNavigation({
       documentEpoch: browserDocumentEpoch(), revision: current.revision,
@@ -39,10 +38,10 @@ export function CodiumFilePanel(props: PluginFilePanelProps & { openSettings(): 
       // not delivered a newly hidden panel's intersection update yet.
       visible: visible && panelHasVisibleBounds(panel.current), enabled, state: current.tab.state,
       writeState: current.tab.setState as (state: Record<string, unknown>) => void,
-      open: () => current.openEditor(resolved),
+      open: () => current.openEditor(resolved, editorConnectionKey({ codiumBaseUrl: origin, openMode: mode })),
     });
     if (result === "failed") setNavigationMessage("The file could not be sent to VSCodium. Use Open in VSCodium tab to retry.");
-    else if (result === "sent") setNavigationMessage("");
+    else if (result === "queued") setNavigationMessage("");
   }, [settings.status, folder, path, line, lineEnd, origin, mode, visible, props.revision, props.host.id, props.workspaceId]);
   return <View ref={panel} style={{ flex: 1 }}>
     <CodiumTargetPanel {...props} target={target} navigationMessage={navigationMessage} />

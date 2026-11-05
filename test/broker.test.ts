@@ -77,6 +77,21 @@ describe("exact-window editor broker", () => {
     expect(transport.destroyed).toBe(true);
     expect(() => sessions.authorize(created.sessionId, created.ownerKey)).toThrow();
   });
+  it("bounds remembered requests even while the oldest command is still pending", async () => {
+    const created = sessions.create("workspace_a", "browser_a", directory);
+    const transport = socket(); vi.spyOn(transport, "write").mockReturnValue(true);
+    const session = await sessions.bind(created.bootstrapKey, directory, "window_a", "connection_a", transport);
+    sessions.update(session, 1, false);
+    const held = sessions.open(session, "request_held", { path: "/held" });
+    for (let index = 0; index < 100; index++) {
+      const id = `request_${index}`;
+      const result = sessions.open(session, id, { path: "/file" });
+      sessions.result(session, id, true); await result;
+      expect(session.requests.size).toBeLessThanOrEqual(64);
+    }
+    expect(session.requests.has("request_held")).toBe(true);
+    sessions.result(session, "request_held", true); await held;
+  });
   it("requires a new companion round trip instead of returning a cached clean snapshot", async () => {
     const created = sessions.create("workspace_a", "browser_a", directory);
     const transport = socket(); const written = vi.spyOn(transport, "write").mockReturnValue(true);

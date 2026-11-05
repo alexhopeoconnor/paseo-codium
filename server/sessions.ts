@@ -103,10 +103,9 @@ export class EditorSessions {
     session.requests.set(requestId, { fingerprint, result });
     // A cached rejection remains handled even if the transport caller disappears.
     void result.catch(() => {});
-    while (session.requests.size > 64) {
-      const first = session.requests.keys().next().value!;
-      if (session.pending.has(first)) break;
-      session.requests.delete(first);
+    for (const id of session.requests.keys()) {
+      if (session.requests.size <= 64) break;
+      if (!session.pending.has(id)) session.requests.delete(id);
     }
     return result;
   }

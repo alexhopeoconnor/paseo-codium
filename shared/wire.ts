@@ -1,7 +1,29 @@
 /** Protocol shared with the dependency-free Codium companion. */
-export const PROTOCOL_VERSION = 1 as const;
 export const MAX_FRAME_BYTES = 32 * 1024;
 export const BOOTSTRAP_SCHEME = "paseo-codium-session";
+/** A stream read may contain several messages or only part of one message. */
+export class MessageFramer {
+  private readonly buffer = new Uint8Array(MAX_FRAME_BYTES);
+  private length = 0;
+  push(chunk: Uint8Array): Uint8Array[] {
+    const frames: Uint8Array[] = [];
+    let start = 0;
+    const append = (end: number) => {
+      const length = end - start;
+      if (this.length + length > MAX_FRAME_BYTES) throw new Error("Editor protocol frame is too large.");
+      this.buffer.set(chunk.subarray(start, end), this.length);
+      this.length += length;
+    };
+    for (let end = 0; end < chunk.length; end++) {
+      if (chunk[end] !== 10) continue;
+      append(end);
+      frames.push(this.buffer.slice(0, this.length));
+      this.length = 0; start = end + 1;
+    }
+    append(chunk.length);
+    return frames;
+  }
+}
 export interface FileTarget { path: string; line?: number; column?: number; lineEnd?: number }
 export type CompanionMessage =
   | { protocol: 1; type: "hello"; bootstrapKey: string; windowId: string; connectionId: string; workspace: string }

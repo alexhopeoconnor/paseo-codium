@@ -2,5 +2,7 @@
   "id": "codium",
   "name": "VSCodium",
   "description": "Open Paseo workspaces and files in a separately hosted VSCodium Web IDE.",
-  "requirements": { "paseo": ">=0.15.0" }
+  "requirements": {
+    "paseo": "^0.15.0"
+  }
 }

@@ -1,7 +1,7 @@
 import { createServer, createConnection, type Socket } from "node:net";
 import { chmod, lstat, mkdir, unlink } from "node:fs/promises";
 import { join, isAbsolute } from "node:path";
-import { MAX_FRAME_BYTES, parseCompanionMessage } from "../shared/wire";
+import { MessageFramer, parseCompanionMessage } from "../shared/wire";
 import { EditorSessions, type Session } from "./sessions";
 
 export function bridgeSocketPath(): string {
@@ -60,15 +60,14 @@ export class EditorBridge {
     if (this.sockets.size >= 64) { socket.destroy(); return; }
     this.sockets.add(socket);
     socket.setTimeout(30_000, () => socket.destroy());
-    let buffer = Buffer.alloc(0);
+    const framer = new MessageFramer();
     let session: Session | undefined;
     let chain = Promise.resolve(); let queued = 0; let failed = false;
     socket.on("data", (data: Buffer) => {
-      buffer = Buffer.concat([buffer, data]);
-      if (buffer.length > MAX_FRAME_BYTES) { socket.destroy(); return; }
-      let offset: number;
-      while ((offset = buffer.indexOf(10)) !== -1) {
-        const line = buffer.subarray(0, offset).toString("utf8"); buffer = buffer.subarray(offset + 1);
+      let frames: Uint8Array[];
+      try { frames = framer.push(data); } catch { socket.destroy(); return; }
+      for (const frame of frames) {
+        const line = Buffer.from(frame).toString("utf8");
         if (++queued > 32 || failed) { socket.destroy(); return; }
         chain = chain.then(async () => {
           if (failed || socket.destroyed) return;
