@@ -1,13 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { EditorQueue, clearEditorQueues, editorConnectionKey, editorQueue, forwardFileNavigation, PENDING_FILE_TTL_MS, restoredEditorTarget, shouldProtectEditor } from "../client/editor-session";
-import { browserDocumentEpoch, makeBootstrapUrl, observePanelVisibility, panelHasVisibleBounds } from "../client/web";
+import { EditorQueue, clearEditorQueues, editorConnectionKey, editorQueue, forwardFileNavigation, PENDING_FILE_TTL_MS, resolveEditorCloseProtection, restoredEditorTarget, shouldProtectEditor } from "../client/editor-session";
+import { browserDocumentEpoch, makeBootstrapUrl, mountCodiumFrame, observePanelVisibility, panelHasVisibleBounds } from "../client/web";
 import type { PluginClientContext } from "@getpaseo/plugin/client";
 import { createConfirmedFileOpener } from "../client/file-open";
-import { readHostCapabilities, type ConfirmedFileOpenContext } from "../client/host-capabilities";
+import { closeProtectionSetter, readHostCapabilities, type ConfirmedFileOpenContext } from "../client/host-capabilities";
+import type { PluginTab } from "@getpaseo/plugin/client";
 
 const connectionA = editorConnectionKey({ codiumBaseUrl: "https://a.example.com", openMode: "embedded" });
 const connectionB = editorConnectionKey({ codiumBaseUrl: "https://b.example.com", openMode: "embedded" });
-afterEach(() => { clearEditorQueues(); vi.useRealTimers(); });
+afterEach(() => { clearEditorQueues(); vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 describe("confirmed host file opens", () => {
   function fixture() {
@@ -26,10 +27,10 @@ describe("confirmed host file opens", () => {
   it("opts into only understood host capability versions", () => {
     const { client } = fixture();
     expect(readHostCapabilities(client)).toEqual({});
-    expect(readHostCapabilities({ ...client, capabilities: { confirmedFileOpen: 1, workspacePanelRetention: 1 } } as PluginClientContext))
-      .toEqual({ confirmedFileOpen: 1, workspacePanelRetention: 1 });
-    expect(readHostCapabilities({ ...client, capabilities: { confirmedFileOpen: 2, workspacePanelRetention: true } } as PluginClientContext))
-      .toEqual({ confirmedFileOpen: undefined, workspacePanelRetention: undefined });
+    expect(readHostCapabilities({ ...client, capabilities: { confirmedFileOpen: 1, workspacePanelRetention: 1, workspacePanelCloseProtection: 1 } } as PluginClientContext))
+      .toEqual({ confirmedFileOpen: 1, workspacePanelRetention: 1, workspacePanelCloseProtection: 1 });
+    expect(readHostCapabilities({ ...client, capabilities: { confirmedFileOpen: 2, workspacePanelRetention: true, workspacePanelCloseProtection: 2 } } as PluginClientContext))
+      .toEqual({ confirmedFileOpen: undefined, workspacePanelRetention: undefined, workspacePanelCloseProtection: undefined });
   });
   it("resolves settings and workspace, then focuses before sending the original request ID and range", async () => {
     const f = fixture(), queue = editorQueue(f.request.hostId, f.request.workspaceId);
@@ -248,6 +249,79 @@ describe("client workspace routing", () => {
   it("never clears protection on unknown or dirty evidence", () => {
     expect(shouldProtectEditor({ known: false, dirty: false }, false, 2, 2)).toBe(true);
     expect(shouldProtectEditor({ known: true, dirty: true }, false, 2, 2)).toBe(true);
+  });
+  it("does not mark a clean focused editor modified when the host checks fresh state before closing", () => {
+    expect(shouldProtectEditor({ connected: true, known: true, dirty: false }, true, 1, 2, true)).toBe(false);
+    expect(shouldProtectEditor({ connected: true, known: true, dirty: true }, true, 1, 2, true)).toBe(true);
+    expect(shouldProtectEditor({ connected: true, known: false, dirty: false }, false, 2, 2, true)).toBe(true);
+    expect(shouldProtectEditor({ connected: false, known: true, dirty: false }, false, 2, 2, true)).toBe(true);
+  });
+});
+
+describe("fresh editor close protection", () => {
+  const clean = { connected: true, known: true, dirty: false };
+  it("uses only a capability-enabled host setter and keeps its stable ownership identity", () => {
+    const setter = vi.fn(), tab = { setCloseProtectionResolver: setter } as unknown as PluginTab;
+    expect(closeProtectionSetter(tab, true)).toBe(setter);
+    expect(closeProtectionSetter(tab, false)).toBeUndefined();
+    expect(closeProtectionSetter({} as PluginTab, true)).toBeUndefined();
+  });
+  it("reads again at close time and protects an edit made after the last clean poll", async () => {
+    let current = clean;
+    const read = vi.fn(async () => current), publish = vi.fn(() => false);
+    await expect(resolveEditorCloseProtection(read, () => true, publish)).resolves.toBe(false);
+    current = { ...clean, dirty: true };
+    await expect(resolveEditorCloseProtection(read, () => true, publish)).resolves.toBe(true);
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(publish).toHaveBeenLastCalledWith(current);
+  });
+  it("discards clean replies when the window is refocused or the editor session is replaced", async () => {
+    let current = true;
+    let answer!: (state: typeof clean) => void;
+    const read = () => new Promise<typeof clean>((resolve) => { answer = resolve; });
+    const publish = vi.fn(() => false);
+    const result = resolveEditorCloseProtection(read, () => current, publish);
+    current = false; answer(clean);
+    await expect(result).resolves.toBe(true);
+    expect(publish).not.toHaveBeenCalled();
+  });
+  it("preserves newer dirty evidence and refuses unknown or disconnected snapshots", async () => {
+    await expect(resolveEditorCloseProtection(async () => clean, () => true, () => true)).resolves.toBe(true);
+    await expect(resolveEditorCloseProtection(async () => ({ ...clean, known: false }), () => true, () => false)).resolves.toBe(true);
+    await expect(resolveEditorCloseProtection(async () => ({ ...clean, connected: false }), () => true, () => false)).resolves.toBe(true);
+  });
+  it("does not fabricate a clean result when the fresh paired-window request fails", async () => {
+    const publish = vi.fn(() => false);
+    await expect(resolveEditorCloseProtection(async () => { throw new Error("pairing disconnected"); }, () => true, publish)).rejects.toThrow("pairing disconnected");
+    expect(publish).not.toHaveBeenCalled();
+  });
+  it("blurs only its own iframe before a close snapshot and removes its listeners on teardown", () => {
+    const doc = { activeElement: null as unknown, createElement: vi.fn(), addEventListener: vi.fn(), removeEventListener: vi.fn() };
+    const frame = { style: {}, remove: vi.fn(), blur: vi.fn(() => { doc.activeElement = null; }) };
+    doc.createElement.mockReturnValue(frame);
+    const listeners = new Map<string, () => void>();
+    const win = { addEventListener: vi.fn((event: string, listener: () => void) => listeners.set(event, listener)),
+      removeEventListener: vi.fn((event: string) => listeners.delete(event)), setTimeout, clearTimeout };
+    vi.stubGlobal("document", doc); vi.stubGlobal("window", win);
+    const focus = vi.fn(), appendChild = vi.fn();
+    const mounted = mountCodiumFrame({ appendChild }, "https://codium.example.com/", focus);
+    const foreign = { blur: vi.fn() }; doc.activeElement = foreign;
+    expect(mounted.blurForClose()).toBe(true);
+    expect(foreign.blur).not.toHaveBeenCalled(); expect(frame.blur).not.toHaveBeenCalled();
+    doc.activeElement = frame;
+    listeners.get("blur")!();
+    expect(focus).toHaveBeenLastCalledWith(true);
+    expect(mounted.blurForClose()).toBe(true);
+    expect(frame.blur).toHaveBeenCalledOnce();
+    expect(focus).toHaveBeenLastCalledWith(false);
+    doc.activeElement = frame; listeners.get("blur")!();
+    expect(focus.mock.calls).toEqual([[true], [false], [true]]);
+    frame.blur.mockImplementationOnce(() => {});
+    expect(mounted.blurForClose()).toBe(false);
+    mounted.remove();
+    expect(frame.remove).toHaveBeenCalledOnce();
+    expect(win.removeEventListener).toHaveBeenCalledTimes(2);
+    expect(doc.removeEventListener).toHaveBeenCalledTimes(2);
   });
 });
 

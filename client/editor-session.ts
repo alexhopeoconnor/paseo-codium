@@ -60,8 +60,17 @@ export function forwardFileNavigation(input: FileNavigationInput): "unchanged" |
   }
 }
 
-export function shouldProtectEditor(state: { dirty: boolean; known: boolean }, frameFocused: boolean, observedEpoch: number, currentEpoch: number): boolean {
-  return state.dirty || !state.known || frameFocused || observedEpoch !== currentEpoch;
+export function shouldProtectEditor(state: { dirty: boolean; known: boolean; connected?: boolean }, frameFocused: boolean, observedEpoch: number, currentEpoch: number, freshCloseSupported = false): boolean {
+  return state.dirty || !state.known || state.connected === false || (!freshCloseSupported && (frameFocused || observedEpoch !== currentEpoch));
+}
+
+/** A close decision must use a new paired-window snapshot, never the last poll. */
+export async function resolveEditorCloseProtection<State extends { dirty: boolean; known: boolean; connected: boolean }>(
+  read: () => Promise<State>, isCurrent: () => boolean, publish: (state: State) => boolean,
+): Promise<boolean> {
+  const state = await read();
+  if (!isCurrent()) return true;
+  return publish(state) || !state.connected || !state.known || state.dirty;
 }
 
 export interface FileRequest { requestId: string; connectionKey: string; target: FileTarget; signal?: FileOpenSignal }

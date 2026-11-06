@@ -4,6 +4,7 @@ import type { PluginClientContext, PluginFilePanelContribution, PluginTab } from
 export interface HostCapabilities {
   confirmedFileOpen?: 1;
   workspacePanelRetention?: 1;
+  workspacePanelCloseProtection?: 1;
 }
 
 export function readHostCapabilities(client: PluginClientContext): HostCapabilities {
@@ -13,6 +14,7 @@ export function readHostCapabilities(client: PluginClientContext): HostCapabilit
   return {
     confirmedFileOpen: values.confirmedFileOpen === 1 ? 1 : undefined,
     workspacePanelRetention: values.workspacePanelRetention === 1 ? 1 : undefined,
+    workspacePanelCloseProtection: values.workspacePanelCloseProtection === 1 ? 1 : undefined,
   };
 }
 
@@ -37,5 +39,11 @@ export type CompatibleFilePanelContribution = PluginFilePanelContribution & {
 
 export function retainedTabSetter(tab: PluginTab, enabled: boolean): ((retained: boolean) => void) | undefined {
   const setter = (tab as PluginTab & { setRetained?: (retained: boolean) => void }).setRetained;
+  return enabled && typeof setter === "function" ? setter : undefined;
+}
+
+export type CloseProtectionResolver = () => boolean | Promise<boolean>;
+export function closeProtectionSetter(tab: PluginTab, enabled: boolean): ((resolver: CloseProtectionResolver | null) => void) | undefined {
+  const setter = (tab as PluginTab & { setCloseProtectionResolver?: (resolver: CloseProtectionResolver | null) => void }).setCloseProtectionResolver;
   return enabled && typeof setter === "function" ? setter : undefined;
 }

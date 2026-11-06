@@ -74,6 +74,7 @@ interface Frame {
   title: string; src: string; allow: string; referrerPolicy: string;
   style: Record<string, string>;
   remove(): void;
+  blur(): void;
 }
 declare const document: {
   createElement(tag: "iframe"): Frame;
@@ -119,7 +120,8 @@ declare const window: {
   clearTimeout(timer: number): void;
 };
 
-export function mountCodiumFrame(parent: unknown, url: string, onFocusChange?: (focused: boolean) => void): () => void {
+export interface MountedCodiumFrame { remove(): void; blurForClose(): boolean }
+export function mountCodiumFrame(parent: unknown, url: string, onFocusChange?: (focused: boolean) => void): MountedCodiumFrame {
   if (!parent || typeof (parent as { appendChild?: unknown }).appendChild !== "function") {
     throw new Error("This client cannot embed VSCodium. Open it in your browser instead.");
   }
@@ -147,10 +149,14 @@ export function mountCodiumFrame(parent: unknown, url: string, onFocusChange?: (
   window.addEventListener("focus", deferFocus);
   document.addEventListener("focusin", deferFocus, true);
   document.addEventListener("pointerdown", deferFocus, true);
-  return () => {
+  return { blurForClose() {
+    if (document.activeElement === frame) frame.blur();
+    inspectFocus();
+    return document.activeElement !== frame;
+  }, remove() {
     window.removeEventListener("blur", deferFocus); window.removeEventListener("focus", deferFocus);
     document.removeEventListener("focusin", deferFocus, true); document.removeEventListener("pointerdown", deferFocus, true);
     if (focusTimer !== undefined) window.clearTimeout(focusTimer);
     frame.remove();
-  };
+  } };
 }

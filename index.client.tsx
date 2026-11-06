@@ -15,7 +15,7 @@ export default function contribute(client: PluginClientContext) {
     client.addSettingsScreen({ id: "connection", title: "Connection", icon: "Settings", Component: CodiumSettingsScreen }),
     client.addWorkspacePanel({
       id: "codium", title: "VSCodium", icon: "Code",
-      Component: (props: PluginWorkspacePanelProps) => <CodiumWorkspacePanel {...props} retainEditor={capabilities.workspacePanelRetention === 1} openSettings={openSettings} />,
+      Component: (props: PluginWorkspacePanelProps) => <CodiumWorkspacePanel {...props} retainEditor={capabilities.workspacePanelRetention === 1} freshCloseProtection={capabilities.workspacePanelCloseProtection === 1} openSettings={openSettings} />,
     }),
     client.addCommandCenterItem({
       id: "open-codium", title: "Open workspace in VSCodium", icon: "Code",

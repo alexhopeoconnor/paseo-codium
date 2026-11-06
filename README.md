@@ -36,14 +36,18 @@ component.
   tab** to retry from the file tab.
 - Stock and fallback file tabs preview saved content. Markdown offers **Preview /
   Source**; other text stays source. HTML, SVG and MDX components are not executed.
-- Codium uses your browser's login session. If login is required, choose **Sign
-  in in browser**, then return and **Reconnect**. The plugin stores no browser
-  credentials.
+- The compact toolbar offers **Open directly**, **Settings**, and connection
+  status. Hover or focus an icon for its hint; click a disconnected status icon
+  to reconnect. Open directly keeps the same workspace folder and can renew your
+  browser login when needed. The plugin stores no browser credentials.
 - Saving connection settings leaves open editors unchanged until **Apply changed
   connection settings**. Pending files wait for the intended connection and expire
   after five minutes. A full browser refresh clears pending requests.
-- Dirty, disconnected or focused editors may require confirmation before closing,
-  reconnecting or changing connection. Save files in Codium before confirming.
+- Dirty or unknown editors require confirmation before closing, reconnecting or
+  changing connection. Hosts with `workspacePanelCloseProtection: 1` query fresh
+  paired-window state at close time, so focusing a clean editor does not mark it
+  modified. Stock hosts retain conservative focus protection. Save files in Codium
+  before confirming a protected close.
 - Hosts advertising `confirmedFileOpen: 1` send files only after confirming the
   viewer choice, without an intermediate file tab. One request ID follows the
   navigation through the existing companion queue. Cancelling its host/workspace
@@ -61,7 +65,7 @@ component.
   to its built-in viewer. Native clients use external opening.
 - Hosts without panel retention may unmount clean background editors after several tab switches. Returning
   restores the last file; Codium manages its other editor and terminal recovery.
-  Suspended sessions may need **Reconnect** after 30 minutes.
+  Suspended sessions may need the connection icon's reconnect action after 30 minutes.
 - Previews are limited to 512 KiB and never save files. The SDK cannot bound a read
   when size metadata is unavailable or stale. Markdown can load remote images;
   relative assets lack the built-in viewer's workspace-aware handling. Files with
