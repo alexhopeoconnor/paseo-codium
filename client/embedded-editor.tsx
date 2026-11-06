@@ -5,11 +5,12 @@ import { Pressable, Text, View } from "react-native";
 import { createSessionRpc, openFileRpc, releaseSessionRpc, sessionStateRpc, type SessionState } from "../shared/rpc";
 import { editorQueue, restoredEditorTarget, shouldProtectEditor } from "./editor-session";
 import { makeBootstrapUrl, mountCodiumFrame, newRequestId } from "./web";
+import { retainedTabSetter } from "./host-capabilities";
 
 type Session = { sessionId: string; ownerKey: string; bootstrapKey: string; directory: string; protocolVersion: 1 };
 const unknownState: SessionState = { connected: false, known: false, dirty: false, sequence: 0, expired: false };
 
-export function EmbeddedEditor(props: PluginWorkspacePanelProps & { origin: string; connectionKey: string; onProtectedChange(value: boolean): void }) {
+export function EmbeddedEditor(props: PluginWorkspacePanelProps & { retainEditor: boolean; origin: string; connectionKey: string; onProtectedChange(value: boolean): void }) {
   const create = useRpc(createSessionRpc);
   const getState = useRpc(sessionStateRpc);
   const openFile = useRpc(openFileRpc);
@@ -25,6 +26,12 @@ export function EmbeddedEditor(props: PluginWorkspacePanelProps & { origin: stri
   const state = useRef<SessionState>(unknownState);
   const queue = editorQueue(props.host.id, props.workspaceId);
   const { colors } = props.theme;
+  const setRetained = retainedTabSetter(props.tab, props.retainEditor);
+
+  useEffect(() => {
+    setRetained?.(true);
+    return () => setRetained?.(false);
+  }, [setRetained]);
 
   useEffect(() => {
     let disposed = false;
@@ -61,7 +68,7 @@ export function EmbeddedEditor(props: PluginWorkspacePanelProps & { origin: stri
             queue.takeExpiredNotice();
             setError("");
           } catch {
-            if (!disposed) { queue.complete(request.requestId, props.connectionKey, false); setError("Codium could not confirm opening the file. Check the editor connection and retry from the file panel."); }
+            if (!disposed) { queue.complete(request.requestId, props.connectionKey, false); setError("Codium could not confirm opening the file. Check the editor connection, then open the file again from the explorer, search or original link."); }
             break;
           }
         }
@@ -70,7 +77,7 @@ export function EmbeddedEditor(props: PluginWorkspacePanelProps & { origin: stri
     const unsubscribe = queue.subscribe(() => { void drain(); });
     const poll = async () => {
       if (disposed || !session) return;
-      if (queue.takeExpiredNotice()) setError("A pending file request expired after five minutes. Open the file again from its file tab.");
+      if (queue.takeExpiredNotice()) setError("A pending file request expired after five minutes. Open the file again from the explorer, search or original link.");
       try {
         const observedFocusEpoch = focusEpoch;
         const next = await api.current.getState({ sessionId: session.sessionId, ownerKey: session.ownerKey });

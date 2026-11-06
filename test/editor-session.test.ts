@@ -1,10 +1,113 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { EditorQueue, clearEditorQueues, editorConnectionKey, editorQueue, forwardFileNavigation, PENDING_FILE_TTL_MS, restoredEditorTarget, shouldProtectEditor } from "../client/editor-session";
 import { browserDocumentEpoch, makeBootstrapUrl, observePanelVisibility, panelHasVisibleBounds } from "../client/web";
+import type { PluginClientContext } from "@getpaseo/plugin/client";
+import { createConfirmedFileOpener } from "../client/file-open";
+import { readHostCapabilities, type ConfirmedFileOpenContext } from "../client/host-capabilities";
 
 const connectionA = editorConnectionKey({ codiumBaseUrl: "https://a.example.com", openMode: "embedded" });
 const connectionB = editorConnectionKey({ codiumBaseUrl: "https://b.example.com", openMode: "embedded" });
 afterEach(() => { clearEditorQueues(); vi.useRealTimers(); });
+
+describe("confirmed host file opens", () => {
+  function fixture() {
+    const settings = { status: "ready" as const, revision: "1", values: { codiumBaseUrl: "https://a.example.com", openMode: "embedded" } };
+    const rpc = vi.fn(async () => settings);
+    const refresh = vi.fn(async () => ({ workspaceDirectory: "/worktree" }));
+    const ref = vi.fn(() => ({ refresh }));
+    const openPanel = vi.fn();
+    const client = { rpc, paseo: { workspaces: { ref } }, openPanel } as unknown as PluginClientContext;
+    const request: ConfirmedFileOpenContext = {
+      requestId: "request_first", hostId: "host-a", workspaceId: "workspace-a", workspaceDirectory: "/worktree",
+      path: "src/main.ts", lineStart: 4, lineEnd: 8, disposition: "preferred", platform: "web", signal: { aborted: false },
+    };
+    return { client, request, rpc, refresh, ref, openPanel, settings, open: createConfirmedFileOpener(client) };
+  }
+  it("opts into only understood host capability versions", () => {
+    const { client } = fixture();
+    expect(readHostCapabilities(client)).toEqual({});
+    expect(readHostCapabilities({ ...client, capabilities: { confirmedFileOpen: 1, workspacePanelRetention: 1 } } as PluginClientContext))
+      .toEqual({ confirmedFileOpen: 1, workspacePanelRetention: 1 });
+    expect(readHostCapabilities({ ...client, capabilities: { confirmedFileOpen: 2, workspacePanelRetention: true } } as PluginClientContext))
+      .toEqual({ confirmedFileOpen: undefined, workspacePanelRetention: undefined });
+  });
+  it("resolves settings and workspace, then focuses before sending the original request ID and range", async () => {
+    const f = fixture(), queue = editorQueue(f.request.hostId, f.request.workspaceId);
+    queue.subscribe(() => expect(f.openPanel).toHaveBeenCalledWith("codium", { workspaceId: "workspace-a" }));
+    expect(f.rpc).not.toHaveBeenCalled();
+    await expect(f.open(f.request)).resolves.toBe("handled");
+    expect(f.rpc).toHaveBeenCalledWith(expect.objectContaining({ name: "settings.connection.read" }), {});
+    expect(f.ref).toHaveBeenCalledWith("workspace-a");
+    expect(queue.peek()).toMatchObject({ requestId: "request_first", connectionKey: connectionA, target: { path: "/worktree/src/main.ts", line: 4, lineEnd: 8 } });
+    expect(editorQueue("host-b", "workspace-a").peek()).toBeUndefined();
+  });
+  it("coalesces one intent through asynchronous resolution and completion but allows an intentional repeat", async () => {
+    const f = fixture();
+    const first = f.open(f.request);
+    expect(f.open(f.request)).toBe(first);
+    await first;
+    editorQueue("host-a", "workspace-a").complete(f.request.requestId, connectionA, true);
+    await f.open(f.request);
+    expect(f.rpc).toHaveBeenCalledOnce();
+    expect(f.openPanel).toHaveBeenCalledOnce();
+    await f.open({ ...f.request, requestId: "request_second", signal: { aborted: false } });
+    expect(f.openPanel).toHaveBeenCalledTimes(2);
+    expect(editorQueue("host-a", "workspace-a").peek()?.requestId).toBe("request_second");
+  });
+  it("keeps native, external and unconfigured opens on the rendered external-opening surface", async () => {
+    const f = fixture();
+    await expect(f.open({ ...f.request, platform: "ios" })).resolves.toBe("render");
+    expect(f.rpc).not.toHaveBeenCalled();
+    f.settings.values.openMode = "external";
+    await expect(f.open({ ...f.request, signal: { aborted: false } })).resolves.toBe("render");
+    f.settings.values.openMode = "embedded"; f.settings.values.codiumBaseUrl = "";
+    await expect(f.open({ ...f.request, signal: { aborted: false } })).resolves.toBe("render");
+    expect(f.refresh).not.toHaveBeenCalled();
+    expect(f.openPanel).not.toHaveBeenCalled();
+  });
+  it("stops before work, after settings, and after workspace resolution when cancelled", async () => {
+    const before = fixture();
+    expect(() => before.open({ ...before.request, signal: { aborted: true } })).toThrow("cancelled");
+    expect(before.rpc).not.toHaveBeenCalled();
+    const settings = fixture(), settingsSignal = { aborted: false };
+    settings.rpc.mockImplementation(async () => { settingsSignal.aborted = true; return settings.settings; });
+    await expect(settings.open({ ...settings.request, signal: settingsSignal })).rejects.toMatchObject({ name: "AbortError" });
+    expect(settings.refresh).not.toHaveBeenCalled();
+    const workspace = fixture(), workspaceSignal = { aborted: false };
+    workspace.refresh.mockImplementation(async () => { workspaceSignal.aborted = true; return { workspaceDirectory: "/worktree" }; });
+    await expect(workspace.open({ ...workspace.request, signal: workspaceSignal })).rejects.toMatchObject({ name: "AbortError" });
+    expect(workspace.openPanel).not.toHaveBeenCalled();
+  });
+  it("drops a cancelled pending command without reporting expiration or reviving it", async () => {
+    const f = fixture(), signal = { aborted: false };
+    await f.open({ ...f.request, signal });
+    signal.aborted = true;
+    const queue = editorQueue("host-a", "workspace-a");
+    expect(queue.peekForConnection(connectionA)).toBeUndefined();
+    expect(queue.takeExpiredNotice()).toBe(false);
+    expect(() => f.open({ ...f.request, signal })).toThrow("cancelled");
+  });
+  it("rejects a moved workspace or failed focus without dispatching another viewer or file", async () => {
+    const moved = fixture();
+    moved.refresh.mockResolvedValue({ workspaceDirectory: "/other-worktree" });
+    await expect(moved.open(moved.request)).rejects.toThrow("directory changed");
+    expect(moved.openPanel).not.toHaveBeenCalled();
+    const f = fixture();
+    f.openPanel.mockImplementation(() => { throw new Error("focus failed"); });
+    await expect(f.open(f.request)).rejects.toThrow("focus failed");
+    await expect(f.open(f.request)).rejects.toThrow("focus failed");
+    expect(f.openPanel).toHaveBeenCalledOnce();
+    expect(editorQueue("host-a", "workspace-a").peek()).toBeUndefined();
+  });
+  it("does not send a new connection's confirmed request through the existing old editor", async () => {
+    const f = fixture(), queue = editorQueue("host-a", "workspace-a"), oldEditor = vi.fn();
+    queue.subscribe(() => { if (queue.peekForConnection(connectionA)) oldEditor(); });
+    f.settings.values.codiumBaseUrl = "https://b.example.com";
+    await f.open(f.request);
+    expect(oldEditor).not.toHaveBeenCalled();
+    expect(queue.peekForConnection(connectionB)?.requestId).toBe(f.request.requestId);
+  });
+});
 
 describe("client workspace routing", () => {
   it("keeps host/workspace queues distinct", () => {

@@ -8,7 +8,7 @@ import { codiumSettings } from "../shared/settings";
 import { editorConnectionKey, forwardFileNavigation } from "./editor-session";
 import { browserDocumentEpoch, makeCodiumUrl, observePanelVisibility, panelHasVisibleBounds, resolveWorkspaceFile } from "./web";
 
-export function CodiumFilePanel(props: PluginFilePanelProps & { openSettings(): void; openEditor(target: FileTarget, connectionKey: string): void }) {
+export function CodiumFilePanel(props: PluginFilePanelProps & { autoForward: boolean; openSettings(): void; openEditor(target: FileTarget, connectionKey: string): void }) {
   const settings = useSettings(codiumSettings);
   const folder = useWorkspace(props.workspaceId, (workspace) => workspace.directory);
   const panel = useRef<View | null>(null);
@@ -20,11 +20,11 @@ export function CodiumFilePanel(props: PluginFilePanelProps & { openSettings(): 
   const origin = settings.status === "ready" ? settings.values.codiumBaseUrl : "";
   const mode = settings.status === "ready" ? settings.values.openMode : "external";
   useEffect(() => {
-    if (Platform.OS !== "web") return;
+    if (!props.autoForward || Platform.OS !== "web") return;
     return observePanelVisibility(panel.current, setVisible);
-  }, []);
+  }, [props.autoForward]);
   useEffect(() => {
-    if (Platform.OS !== "web" || settings.status === "loading" || !folder) return;
+    if (!props.autoForward || Platform.OS !== "web" || settings.status === "loading" || !folder) return;
     const current = latest.current;
     let resolved: FileTarget;
     try { resolved = { path: resolveWorkspaceFile(folder, path), line, lineEnd }; }
@@ -42,7 +42,7 @@ export function CodiumFilePanel(props: PluginFilePanelProps & { openSettings(): 
     });
     if (result === "failed") setNavigationMessage("The file could not be sent to VSCodium. Use Open in VSCodium tab to retry.");
     else if (result === "queued") setNavigationMessage("");
-  }, [settings.status, folder, path, line, lineEnd, origin, mode, visible, props.revision, props.host.id, props.workspaceId]);
+  }, [props.autoForward, settings.status, folder, path, line, lineEnd, origin, mode, visible, props.revision, props.host.id, props.workspaceId]);
   return <View ref={panel} style={{ flex: 1 }}>
     <CodiumTargetPanel {...props} target={target} navigationMessage={navigationMessage} />
     <FilePreview key={`${props.host.id}:${props.workspaceId}:${props.file.path}`} file={props.file} theme={props.theme} />

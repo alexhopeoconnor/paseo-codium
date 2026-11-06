@@ -2,8 +2,9 @@
 
 Open a separately hosted VSCodium Web IDE from Paseo. Embedded mode uses one
 editor per workspace; file links navigate that editor without reloading it.
-The remaining file tab provides a read-only preview. External mode opens Codium
-in a browser tab.
+Capable Paseo hosts dispatch confirmed file opens directly to that editor and
+retain it while backgrounded. Stock hosts keep a read-only file preview alongside
+the editor. External mode opens Codium in a browser tab.
 
 ## Setup
 
@@ -41,15 +42,22 @@ component.
   after five minutes. A full browser refresh clears pending requests.
 - Dirty, disconnected or focused editors may require confirmation before closing,
   reconnecting or changing connection. Save files in Codium before confirming.
+- Hosts advertising `confirmedFileOpen: 1` send files only after confirming the
+  viewer choice, without an intermediate file tab. One request ID follows the
+  navigation through the existing companion queue. Cancelling its host/workspace
+  lifetime drops pending navigation. Hosts advertising `workspacePanelRetention: 1`
+  retain mounted embedded editors independently from unsaved-change protection.
+  Close the editor explicitly to release it; retention does not survive browser
+  refresh or process termination.
 
 ## Limits
 
-- Paseo can mount a file viewer before its chooser is confirmed, so automatic
+- Stock Paseo can mount a file viewer before its chooser is confirmed, so automatic
   opening can occur before **Use**. Its public SDK exposes no confirmed-choice
   signal.
-- Paseo retains the intermediate file tab and may route some file-at-line links
+- Stock Paseo retains the intermediate file tab and may route some file-at-line links
   to its built-in viewer. Native clients use external opening.
-- Paseo may unmount clean background editors after several tab switches. Returning
+- Hosts without panel retention may unmount clean background editors after several tab switches. Returning
   restores the last file; Codium manages its other editor and terminal recovery.
   Suspended sessions may need **Reconnect** after 30 minutes.
 - Previews are limited to 512 KiB and never save files. The SDK cannot bound a read
@@ -67,22 +75,27 @@ component.
 Paseo compiles the plugin source. The companion uses Codium's extension API and
 Node builtins. Neither output needs production npm dependencies.
 
-Install development dependencies in Docker, then test and package without network
-access. Keep generated artifacts outside the checkout:
+Copy source into an isolated build directory, install development dependencies in
+Docker, then test and package without network access. The source checkout remains
+free of dependencies, build output and dependency-installed hooks:
 
 ```bash
 codium_build_image=node:24.12.0-bookworm-slim@sha256:7326fb2dbdce998edd72140946851be64ef4a643e8715e138ca467e8e9d92c99
+codium_work=$(mktemp -d)
 codium_output=$(mktemp -d)
+tar --exclude=.git --exclude=node_modules -cf - . | tar -xf - -C "$codium_work"
 
 docker run --rm --user "$(id -u):$(id -g)" \
-  --mount "type=bind,src=$PWD,dst=/work" --workdir /work --env HOME=/tmp \
+  --mount "type=bind,src=$codium_work,dst=/work" --workdir /work --env HOME=/tmp \
   "$codium_build_image" npm ci --ignore-scripts --no-audit --no-fund
 
 docker run --rm --network none --user "$(id -u):$(id -g)" \
-  --mount "type=bind,src=$PWD,dst=/work" \
+  --mount "type=bind,src=$codium_work,dst=/work" \
   --mount "type=bind,src=$codium_output,dst=/output" \
   --workdir /work --env HOME=/tmp "$codium_build_image" \
   sh -c 'npm run typecheck && npm test && npm run build:companion -- --out-dir /output'
+
+rm -rf -- "$codium_work"
 ```
 
 The output directory contains `paseo-codium-bridge.vsix` and `companion.json`.

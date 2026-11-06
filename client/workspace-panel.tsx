@@ -7,7 +7,7 @@ import { EmbeddedEditor } from "./embedded-editor";
 import { makeCodiumUrl } from "./web";
 import { editorConnectionKey, editorQueue, type EditorConnection } from "./editor-session";
 
-export function CodiumWorkspacePanel(props: PluginWorkspacePanelProps & { openSettings(): void }) {
+export function CodiumWorkspacePanel(props: PluginWorkspacePanelProps & { retainEditor: boolean; openSettings(): void }) {
   const settings = useSettings(codiumSettings);
   const directory = useWorkspace(props.workspaceId, (workspace) => workspace.directory);
   const [connection, setConnection] = useState<EditorConnection | null>(null);

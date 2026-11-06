@@ -1,4 +1,5 @@
 import { validTarget, type FileTarget } from "../shared/wire";
+import type { FileOpenSignal } from "./host-capabilities";
 
 export interface EditorConnection { codiumBaseUrl: string; openMode: "external" | "embedded" }
 export function editorConnectionKey(connection: EditorConnection): string {
@@ -63,7 +64,7 @@ export function shouldProtectEditor(state: { dirty: boolean; known: boolean }, f
   return state.dirty || !state.known || frameFocused || observedEpoch !== currentEpoch;
 }
 
-export interface FileRequest { requestId: string; connectionKey: string; target: FileTarget }
+export interface FileRequest { requestId: string; connectionKey: string; target: FileTarget; signal?: FileOpenSignal }
 interface PendingFileRequest extends FileRequest { expiresAt: number }
 export const PENDING_FILE_TTL_MS = 5 * 60_000;
 const MAX_WORKSPACE_QUEUES = 128;
@@ -77,6 +78,7 @@ export class EditorQueue {
   constructor(private readonly now: () => number = Date.now) { this.lastActivity = now(); }
   touch() { this.lastActivity = this.now(); }
   private pruneExpired() {
+    this.requests = this.requests.filter((request) => !request.signal?.aborted);
     const before = this.requests.length;
     this.requests = this.requests.filter((request) => request.expiresAt > this.now());
     if (this.requests.length < before) this.expired = true;
