@@ -3,7 +3,7 @@
   "displayName": "Paseo Codium Bridge",
   "description": "Connect this Codium window to its Paseo workspace editor panel.",
   "publisher": "alexhopeoconnor",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "license": "MIT",
   "engines": {
     "vscode": "^1.143.0"

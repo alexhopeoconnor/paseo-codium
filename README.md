@@ -22,7 +22,7 @@ Choose **Inside Paseo** after installing the companion; **In a browser tab** is
 the default and works without it.
 
 Build the plugin and companion from the same revision. The current companion is
-`alexhopeoconnor.paseo-codium-bridge@0.1.1`, protocol `1`. Install its verified VSIX
+`alexhopeoconnor.paseo-codium-bridge@0.1.2`, protocol `1`. Install its verified VSIX
 with Codium's server launcher and the same data and extension directories as the
 running service. Save edits and close editor sessions before updating either
 component.
