@@ -31,9 +31,11 @@ component.
 
 - Open **Command Center → Open workspace in VSCodium**, or select **VSCodium**
   in a file's **Open with** chooser. Embedded file opens select the workspace
-  editor automatically; **Open in VSCodium tab** retries a failed request.
-- The file tab previews saved content. Markdown offers **Preview / Source**;
-  other text stays source. HTML, SVG and MDX components are not executed.
+  editor automatically. If a direct open fails, retry from the explorer, search
+  or original link. On stock hosts or a rendered fallback, use **Open in VSCodium
+  tab** to retry from the file tab.
+- Stock and fallback file tabs preview saved content. Markdown offers **Preview /
+  Source**; other text stays source. HTML, SVG and MDX components are not executed.
 - Codium uses your browser's login session. If login is required, choose **Sign
   in in browser**, then return and **Reconnect**. The plugin stores no browser
   credentials.
