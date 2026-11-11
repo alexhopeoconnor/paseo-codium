@@ -1,5 +1,8 @@
 # Paseo VSCodium
 
+> Developed and supported for the [workstation fork](https://github.com/alexhopeoconnor/paseo/tree/workstation).
+> Build and install locally from reviewed source. Binary release assets are not published.
+
 Open a separately hosted VSCodium Web IDE from Paseo. Embedded mode uses one
 editor per workspace; file links navigate that editor without reloading it.
 Capable Paseo hosts dispatch confirmed file opens directly to that editor and
@@ -8,12 +11,14 @@ the editor. External mode opens Codium in a browser tab.
 
 ## Setup
 
-Requires Paseo 0.15.x and VSCodium Web with access to the same filesystem paths.
+Requires a reviewed workstation-fork release and VSCodium Web with access to the
+same filesystem paths. The manifest's `^0.15.0` SDK range is not a claim of tested
+stock-host compatibility; the fallback behavior below describes graceful degradation.
 For embedded mode, run both services as the same Unix user and install the
 matching [companion extension](companion/README.md).
 
 ```bash
-paseo plugin add github:alexhopeoconnor/paseo-codium
+paseo plugin add github:alexhopeoconnor/paseo-codium --ref FULL_REVIEWED_COMMIT
 ```
 
 In the plugin's **Connection** settings, enter a plain HTTPS origin such as
@@ -21,7 +26,11 @@ In the plugin's **Connection** settings, enter a plain HTTPS origin such as
 Choose **Inside Paseo** after installing the companion; **In a browser tab** is
 the default and works without it.
 
-Build the plugin and companion from the same revision. The current companion is
+Select an exact commit using the fork's
+[installation guide](https://github.com/alexhopeoconnor/paseo/tree/workstation#optional-workstation-plugins).
+No private infrastructure repository or artifact registry is required.
+
+Build the plugin and companion from that same revision. The current companion is
 `alexhopeoconnor.paseo-codium-bridge@0.1.2`, protocol `1`. Install its verified VSIX
 with Codium's server launcher and the same data and extension directories as the
 running service. Save edits and close editor sessions before updating either
@@ -89,7 +98,8 @@ free of dependencies, build output and dependency-installed hooks:
 codium_build_image=node:24.12.0-bookworm-slim@sha256:7326fb2dbdce998edd72140946851be64ef4a643e8715e138ca467e8e9d92c99
 codium_work=$(mktemp -d)
 codium_output=$(mktemp -d)
-tar --exclude=.git --exclude=node_modules -cf - . | tar -xf - -C "$codium_work"
+# Run in a checkout at the exact revision selected for installation.
+git archive HEAD | tar -xf - -C "$codium_work"
 
 docker run --rm --user "$(id -u):$(id -g)" \
   --mount "type=bind,src=$codium_work,dst=/work" --workdir /work --env HOME=/tmp \
