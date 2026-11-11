@@ -1,5 +1,7 @@
 # Paseo VSCodium
 
+> Developed and supported for the workstation fork. Build and install locally from reviewed source.
+
 Open a separately hosted VSCodium Web IDE from Paseo. Embedded mode uses one
 editor per workspace; file links navigate that editor without reloading it.
 Capable Paseo hosts dispatch confirmed file opens directly to that editor and
