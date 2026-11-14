@@ -20,15 +20,21 @@ describe("companion connection lifecycle", () => {
     await rm(directory, { recursive: true, force: true });
     vi.unstubAllEnvs();
   });
-  const start = async () => {
+  const start = async (closePrimarySidebar = false) => {
     bridge = new EditorBridge(join(directory, "paseo-codium", "bridge.sock"));
     await bridge.ready;
-    return bridge.sessions.create("workspace_a", "client_a", directory);
+    return bridge.sessions.create("workspace_a", "client_a", directory, { closePrimarySidebar });
   };
   function client() {
     const status = vi.fn(), open = vi.fn(async (_target: unknown, _current: () => boolean) => {});
-    const instance = new BridgeClient({ windowId: "window_a", workspace: directory, dirty: () => false, open, status });
-    clients.push(instance); return { instance, status, open };
+    const closePrimarySidebar = vi.fn();
+    let activeFile: string | null = null;
+    const instance = new BridgeClient({
+      windowId: "window_a", workspace: directory, dirty: () => false, activeFile: () => activeFile,
+      open, closePrimarySidebar, status,
+    });
+    clients.push(instance);
+    return { instance, status, open, closePrimarySidebar, setActiveFile(value: string | null) { activeFile = value; } };
   }
   it("never binds after disposal during asynchronous socket inspection", async () => {
     const created = await start(), c = client();
@@ -55,26 +61,69 @@ describe("companion connection lifecycle", () => {
     await expect(c.instance.pair("b".repeat(64))).rejects.toThrow("no longer available");
     expect(c.status).not.toHaveBeenCalledWith(true);
   });
-  it("accepts several valid commands coalesced beyond one frame's limit", async () => {
+  it("accepts several valid protocol 2 commands coalesced beyond one frame's limit", async () => {
     const created = await start(), c = client(); await c.instance.pair(created.bootstrapKey);
     const session = bridge!.sessions.authorize(created.sessionId, created.ownerKey);
-    const messages = Array.from({ length: 5 }, (_, index) => ({ protocol: 1, type: "openFile", requestId: `request_${index}`,
+    const messages = Array.from({ length: 5 }, (_, index) => ({ protocol: 2, type: "openFile", requestId: `request_${index}`,
       target: { path: "/" + "x".repeat(7000) + index } }));
     session.socket!.write(messages.map((message) => JSON.stringify(message) + "\n").join(""));
     await vi.waitFor(() => expect(c.open).toHaveBeenCalledTimes(5));
     expect(c.status).not.toHaveBeenLastCalledWith(false);
   });
+  it("sends activeFile with manual tab changes, null observations and snapshots", async () => {
+    const created = await start(), c = client(); await c.instance.pair(created.bootstrapKey);
+    const session = bridge!.sessions.authorize(created.sessionId, created.ownerKey);
+    await vi.waitFor(() => expect(bridge!.sessions.state(session).known).toBe(true));
+    c.setActiveFile("src/a.ts");
+    c.instance.sendState();
+    await vi.waitFor(() => expect(bridge!.sessions.state(session).activeFile).toBe("src/a.ts"));
+    // Rapid event requests coalesce to one state with the latest file.
+    c.setActiveFile("src/b.ts");
+    c.instance.requestState(); c.instance.requestState(); c.instance.requestState();
+    await vi.waitFor(() => expect(bridge!.sessions.state(session).activeFile).toBe("src/b.ts"));
+    c.setActiveFile(null);
+    c.instance.sendState();
+    await vi.waitFor(() => expect(bridge!.sessions.state(session).activeFile).toBeNull());
+    c.setActiveFile("src/c.ts");
+    await expect(bridge!.sessions.freshState(session)).resolves.toMatchObject({ activeFile: "src/c.ts" });
+  });
+  it("joins duplicate request identities before execution and fails conflicting reuse", async () => {
+    const created = await start(), c = client(); await c.instance.pair(created.bootstrapKey);
+    const socket = bridge!.sessions.authorize(created.sessionId, created.ownerKey).socket!;
+    const replies: Array<Record<string, unknown>> = [];
+    const framer = (chunk: Buffer) => {
+      for (const line of chunk.toString("utf8").split("\n").filter(Boolean)) {
+        try { replies.push(JSON.parse(line)); } catch { /* partial */ }
+      }
+    };
+    socket.on("data", framer);
+    const command = { protocol: 2, type: "openFile", requestId: "request_duplicate", target: { path: "/same" } };
+    socket.write(JSON.stringify(command) + "\n");
+    socket.write(JSON.stringify(command) + "\n");
+    await vi.waitFor(() => expect(c.open).toHaveBeenCalledOnce());
+    socket.write(JSON.stringify({ protocol: 2, type: "openFile", requestId: "request_duplicate", target: { path: "/different" } }) + "\n");
+    await vi.waitFor(() => expect(replies).toContainEqual(expect.objectContaining({ requestId: "request_duplicate", ok: false, error: "Request identifier conflict." })));
+    expect(c.open).toHaveBeenCalledOnce();
+  });
+  it("applies the sidebar presentation command once per Codium window across reconnects", async () => {
+    const created = await start(true), c = client(); await c.instance.pair(created.bootstrapKey);
+    await vi.waitFor(() => expect(c.closePrimarySidebar).toHaveBeenCalledOnce());
+    const session = bridge!.sessions.authorize(created.sessionId, created.ownerKey);
+    session.socket!.destroy();
+    await vi.waitFor(() => expect(c.status.mock.calls.filter(([connected]) => connected)).toHaveLength(2), { timeout: 5000 });
+    expect(c.closePrimarySidebar).toHaveBeenCalledOnce();
+  }, 10_000);
   it("invalidates the current-operation guard immediately on disposal", async () => {
     const created = await start(), c = client(); await c.instance.pair(created.bootstrapKey);
     const session = bridge!.sessions.authorize(created.sessionId, created.ownerKey);
-    session.socket!.write(JSON.stringify({ protocol: 1, type: "openFile", requestId: "request_a", target: { path: "/file" } }) + "\n");
+    session.socket!.write(JSON.stringify({ protocol: 2, type: "openFile", requestId: "request_a", target: { path: "/file" } }) + "\n");
     await vi.waitFor(() => expect(c.open).toHaveBeenCalledOnce());
     const isCurrent = c.open.mock.calls[0]![1];
     expect(isCurrent()).toBe(true);
     c.instance.dispose();
     expect(isCurrent()).toBe(false);
   });
-  it("reconnects with the same identity without sending late results from the old transport", async () => {
+  it("retains an in-flight identity across reconnect, joins duplicates and delivers its authoritative result", async () => {
     const created = await start(), c = client(); await c.instance.pair(created.bootstrapKey);
     const session = bridge!.sessions.authorize(created.sessionId, created.ownerKey);
     const identity = { ...session.bound };
@@ -84,14 +133,18 @@ describe("companion connection lifecycle", () => {
     const command = bridge!.sessions.open(session, "request_slow", { path: "/slow" });
     await vi.waitFor(() => expect(c.open).toHaveBeenCalledOnce());
     session.socket!.destroy();
-    await expect(command).rejects.toThrow("disconnected");
+    await expect(command).resolves.toMatchObject({ outcome: "uncertain", reason: "disconnected", dispatched: true });
     await vi.waitFor(() => expect(c.status).toHaveBeenLastCalledWith(false));
     await vi.waitFor(() => expect(c.status.mock.calls.filter(([connected]) => connected)).toHaveLength(2), { timeout: 5000 });
     expect(session.bound).toEqual(identity);
     await vi.waitFor(() => expect(bridge!.sessions.state(session).known).toBe(true));
+    // A duplicate after reconnect must join the still-running operation, not run it again.
+    session.socket!.write(JSON.stringify({ protocol: 2, type: "openFile", requestId: "request_slow", target: { path: "/slow" } }) + "\n");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(c.open).toHaveBeenCalledOnce();
     const result = vi.spyOn(bridge!.sessions, "result");
     complete();
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(result).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(result.mock.calls[0]?.slice(0, 3)).toEqual([session, "request_slow", true]));
+    expect(c.open).toHaveBeenCalledOnce();
   }, 10_000);
 });

@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import { BOOTSTRAP_SCHEME } from "../../shared/wire";
 import { BridgeClient } from "./bridge-client";
 import { BootstrapProvider } from "./bootstrap-provider";
-import { isDirty, observeEditorState } from "./editor-state";
+import { activeWorkspaceFile, isDirty, observeEditorState } from "./editor-state";
 import { openFile } from "./navigation";
 import { createWindowIdentity } from "./identity";
 
@@ -17,7 +17,13 @@ export function activate(context: vscode.ExtensionContext) {
     windowId: createWindowIdentity(),
     workspace: folders[0]!.uri.fsPath,
     dirty: isDirty,
+    activeFile: () => activeWorkspaceFile(folders[0]!.uri.fsPath),
     open: openFile,
+    closePrimarySidebar() {
+      // Presentation only: the user can reopen the sidebar; never close the
+      // auxiliary bar or any editor/terminal.
+      void vscode.commands.executeCommand("workbench.action.closeSidebar").then(undefined, () => {});
+    },
     status(connected) { status.text = connected ? "$(link) Paseo" : "$(debug-disconnect) Paseo";
       status.tooltip = connected ? "Connected to this window's Paseo editor panel" : "Paseo is disconnected. Unsaved edits remain in this editor."; },
   });
@@ -31,5 +37,5 @@ export function activate(context: vscode.ExtensionContext) {
         status.tooltip = "The workspace changed. Reopen the intended workspace from Paseo to reconnect.";
       }
     }),
-    ...observeEditorState(() => bridge.sendState()));
+    ...observeEditorState(() => bridge.requestState()));
 }

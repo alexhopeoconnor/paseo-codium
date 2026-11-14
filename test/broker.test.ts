@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Socket } from "node:net";
 import { BOOTSTRAP_TTL_MS, EditorSessions } from "../server/sessions";
+import { MAX_RECEIPTS } from "../shared/receipts";
 
 describe("exact-window editor broker", () => {
   let directory: string;
@@ -64,10 +65,14 @@ describe("exact-window editor broker", () => {
     expect(written).toHaveBeenCalledTimes(1);
     await expect(sessions.open(session, "request_a", { path: "/different" })).rejects.toThrow();
     sessions.result(session, "stale_request", true);
-    expect(session.pending.size).toBe(1);
+    expect(session.requests.size).toBe(1);
+    expect(sessions.receipt(session, "stale_request")).toBeUndefined();
     sessions.result(session, "request_a", true);
-    await Promise.all([first, duplicate]);
-    expect(session.pending.size).toBe(0);
+    await expect(Promise.all([first, duplicate])).resolves.toEqual([
+      expect.objectContaining({ outcome: "opened" }),
+      expect.objectContaining({ outcome: "opened" }),
+    ]);
+    expect(written).toHaveBeenCalledTimes(1);
   });
   it("destroys the bound transport when releasing the panel", async () => {
     const created = sessions.create("workspace_a", "browser_a", directory);
@@ -83,14 +88,37 @@ describe("exact-window editor broker", () => {
     const session = await sessions.bind(created.bootstrapKey, directory, "window_a", "connection_a", transport);
     sessions.update(session, 1, false);
     const held = sessions.open(session, "request_held", { path: "/held" });
-    for (let index = 0; index < 100; index++) {
+    for (let index = 0; index < MAX_RECEIPTS + 40; index++) {
       const id = `request_${index}`;
       const result = sessions.open(session, id, { path: "/file" });
       sessions.result(session, id, true); await result;
-      expect(session.requests.size).toBeLessThanOrEqual(64);
+      expect(session.requests.size).toBeLessThanOrEqual(MAX_RECEIPTS);
     }
     expect(session.requests.has("request_held")).toBe(true);
     sessions.result(session, "request_held", true); await held;
+  });
+  it("stores the latest sequence activeFile, preserves omission and records a null observation", async () => {
+    const created = sessions.create("workspace_a", "browser_a", directory);
+    const transport = socket(); vi.spyOn(transport, "write").mockReturnValue(true);
+    const session = await sessions.bind(created.bootstrapKey, directory, "window_a", "connection_a", transport);
+    sessions.update(session, 2, false, "src/a.ts");
+    expect(sessions.state(session)).toMatchObject({ sequence: 2, activeFile: "src/a.ts" });
+    sessions.update(session, 1, false, "old/ignored.ts");
+    expect(sessions.state(session)).toMatchObject({ sequence: 2, activeFile: "src/a.ts" });
+    sessions.update(session, 3, true);
+    expect(sessions.state(session)).toMatchObject({ sequence: 3, dirty: true, activeFile: "src/a.ts" });
+    sessions.update(session, 4, false, null);
+    expect(sessions.state(session)).toMatchObject({ sequence: 4, activeFile: null });
+  });
+  it("carries activeFile through a fresh paired-window snapshot", async () => {
+    const created = sessions.create("workspace_a", "browser_a", directory);
+    const transport = socket(); const written = vi.spyOn(transport, "write").mockReturnValue(true);
+    const session = await sessions.bind(created.bootstrapKey, directory, "window_a", "connection_a", transport);
+    sessions.update(session, 1, false, "src/a.ts");
+    const response = sessions.freshState(session);
+    const request = JSON.parse(String(written.mock.calls[0]![0]));
+    sessions.snapshot(session, request.requestId, 2, true, "src/b.ts");
+    await expect(response).resolves.toMatchObject({ sequence: 2, dirty: true, activeFile: "src/b.ts" });
   });
   it("requires a new companion round trip instead of returning a cached clean snapshot", async () => {
     const created = sessions.create("workspace_a", "browser_a", directory);

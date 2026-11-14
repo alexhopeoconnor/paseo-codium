@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { MAX_FRAME_BYTES, MessageFramer, parseBrokerMessage, parseCompanionMessage, validTarget } from "../shared/wire";
-import { targetSchema } from "../shared/rpc";
+import { MAX_FRAME_BYTES, MessageFramer, PROTOCOL_VERSION, parseBrokerMessage, parseCompanionMessage, validActiveFile, validTarget } from "../shared/wire";
+import { sessionStateSchema, targetSchema } from "../shared/rpc";
 import { createWindowIdentity } from "../companion/src/identity";
 
 describe("narrow companion wire protocol", () => {
@@ -10,18 +10,45 @@ describe("narrow companion wire protocol", () => {
     const first = createWindowIdentity(); const second = createWindowIdentity();
     expect(first).not.toBe(second);
     for (const windowId of [first, second]) {
-      expect(parseCompanionMessage({ protocol: 1, type: "hello", bootstrapKey: "a".repeat(64), windowId,
+      expect(parseCompanionMessage({ protocol: 2, type: "hello", bootstrapKey: "a".repeat(64), windowId,
         connectionId: "connection_1234", workspace: "/project" }).type).toBe("hello");
     }
   });
+  it("is protocol 2 only; a matched plugin and companion reject old or unknown versions", () => {
+    expect(PROTOCOL_VERSION).toBe(2);
+    for (const protocol of [1, 3]) {
+      expect(() => parseCompanionMessage({ protocol, type: "state", sequence: 1, dirty: false })).toThrow();
+      expect(() => parseBrokerMessage({ protocol, type: "getState", requestId: "request_1234" })).toThrow();
+    }
+  });
   it.each([
-    { type: "shell", protocol: 1, command: "ls" },
-    { type: "state", protocol: 2, sequence: 1, dirty: false },
-    { type: "state", protocol: 1, sequence: -1, dirty: false },
-    { type: "state", protocol: 1, sequence: 1, dirty: "false" },
-    { type: "state", protocol: 1, sequence: 1, dirty: false, command: "extra" },
+    { type: "shell", protocol: 2, command: "ls" },
+    { type: "state", protocol: 3, sequence: 1, dirty: false },
+    { type: "state", protocol: 2, sequence: -1, dirty: false },
+    { type: "state", protocol: 2, sequence: 1, dirty: "false" },
+    { type: "state", protocol: 2, sequence: 1, dirty: false, command: "extra" },
   ])("rejects malformed or unsupported companion messages", (message) => {
     expect(() => parseCompanionMessage(message)).toThrow();
+  });
+  it("parses every protocol 2 companion message without extra fields", () => {
+    expect(parseCompanionMessage({ protocol: 2, type: "snapshot", requestId: "request_1234", sequence: 2, dirty: true })).toMatchObject({ type: "snapshot" });
+    expect(parseCompanionMessage({ protocol: 2, type: "result", requestId: "request_1234", ok: false, error: "failed" })).toMatchObject({ type: "result" });
+    expect(parseCompanionMessage({ protocol: 2, type: "state", sequence: 2, dirty: false })).toMatchObject({ type: "state" });
+    expect(parseCompanionMessage({ protocol: 2, type: "state", sequence: 3, dirty: false, activeFile: "src/a.ts" })).toMatchObject({ activeFile: "src/a.ts" });
+    expect(parseCompanionMessage({ protocol: 2, type: "snapshot", requestId: "request_1234", sequence: 4, dirty: true, activeFile: null })).toMatchObject({ activeFile: null });
+    expect(() => parseCompanionMessage({ protocol: 2, type: "result", requestId: "request_1234", ok: true, token: "secret" })).toThrow();
+  });
+  it("bounds activeFile to normalized workspace-relative local paths or null", () => {
+    const state = { connected: true, known: true, dirty: false, sequence: 1, expired: false };
+    for (const value of ["src/a.ts", "a/b c/naïve.ts", null]) {
+      expect(validActiveFile(value)).toBe(true);
+      expect(sessionStateSchema.safeParse({ ...state, activeFile: value }).success).toBe(true);
+    }
+    for (const value of ["", "/abs.ts", "../a.ts", "a/../b.ts", "a/./b.ts", "a//b.ts", "a\0.ts", "x".repeat(8193), 42]) {
+      expect(validActiveFile(value)).toBe(false);
+      expect(() => parseCompanionMessage({ protocol: 2, type: "state", sequence: 1, dirty: false, activeFile: value })).toThrow();
+      expect(sessionStateSchema.safeParse({ ...state, activeFile: value }).success).toBe(false);
+    }
   });
   it.each([
     { path: "relative" }, { path: "/bad\0file" }, { path: "/file", line: 0 },
@@ -30,13 +57,20 @@ describe("narrow companion wire protocol", () => {
   ])("rejects invalid file targets at both RPC and socket boundaries", (target) => {
     expect(validTarget(target)).toBe(false);
     expect(targetSchema.safeParse(target).success).toBe(false);
-    expect(() => parseBrokerMessage({ protocol: 1, type: "openFile", requestId: "request_1234", target })).toThrow();
+    expect(() => parseBrokerMessage({ protocol: 2, type: "openFile", requestId: "request_1234", target })).toThrow();
   });
   it("preserves absolute targets and ranges without a goto URL parser", () => {
     const target = { path: "/other project/naïve%20#?:12:4.txt", line: 3, lineEnd: 5, column: 2 };
     expect(validTarget(target)).toBe(true);
     expect(targetSchema.parse(target)).toEqual(target);
-    expect(parseBrokerMessage({ protocol: 1, type: "openFile", requestId: "request_1234", target })).toEqual({ protocol: 1, type: "openFile", requestId: "request_1234", target });
+    expect(parseBrokerMessage({ protocol: 2, type: "openFile", requestId: "request_1234", target })).toEqual({ protocol: 2, type: "openFile", requestId: "request_1234", target });
+  });
+  it("parses control messages, including the one-time sidebar presentation", () => {
+    expect(parseBrokerMessage({ protocol: 2, type: "bound", sessionId: "session_1234" })).toMatchObject({ type: "bound" });
+    expect(parseBrokerMessage({ protocol: 2, type: "presentation", primarySidebar: "close-once" })).toMatchObject({ type: "presentation" });
+    expect(parseBrokerMessage({ protocol: 2, type: "cancel", requestId: "request_1234" })).toMatchObject({ type: "cancel" });
+    expect(() => parseBrokerMessage({ protocol: 2, type: "presentation", primarySidebar: "close-always" })).toThrow();
+    expect(() => parseBrokerMessage({ protocol: 2, type: "cancel", requestId: "request_1234", target: { path: "/a" } })).toThrow();
   });
 });
 

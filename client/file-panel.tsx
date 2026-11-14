@@ -6,23 +6,38 @@ import { FilePreview } from "./file-preview";
 import type { FileTarget } from "../shared/wire";
 import { codiumSettings } from "../shared/settings";
 import { editorConnectionKey, forwardFileNavigation } from "./editor-session";
+import {
+  createRevealLifetime, tabIsVisible, type HostCapabilities, type RevealFileOptions, type RevealFileResult,
+} from "./host-capabilities";
 import { browserDocumentEpoch, makeCodiumUrl, observePanelVisibility, panelHasVisibleBounds, resolveWorkspaceFile } from "./web";
 
-export function CodiumFilePanel(props: PluginFilePanelProps & { autoForward: boolean; openSettings(): void; openEditor(target: FileTarget, connectionKey: string): void }) {
+export function CodiumFilePanel(props: PluginFilePanelProps & {
+  capabilities: HostCapabilities; autoForward: boolean; openSettings(): void;
+  revealInFiles?(options?: RevealFileOptions): Promise<RevealFileResult>;
+  openEditor(target: FileTarget, connectionKey: string): void;
+}) {
   const settings = useSettings(codiumSettings);
   const folder = useWorkspace(props.workspaceId, (workspace) => workspace.directory);
   const panel = useRef<View | null>(null);
   const latest = useRef(props); latest.current = props;
-  const [visible, setVisible] = useState(false);
+  const [observedVisible, setObservedVisible] = useState(false);
   const [navigationMessage, setNavigationMessage] = useState("");
+  const revealLifetime = useRef(createRevealLifetime());
+  const hostVisible = tabIsVisible(props.tab, props.capabilities);
+  const visible = hostVisible ?? observedVisible;
   const target = { path: props.file.path, line: props.params.lineStart, lineEnd: props.params.lineEnd };
   const path = target.path, line = target.line, lineEnd = target.lineEnd;
   const origin = settings.status === "ready" ? settings.values.codiumBaseUrl : "";
   const mode = settings.status === "ready" ? settings.values.openMode : "external";
   useEffect(() => {
-    if (!props.autoForward || Platform.OS !== "web") return;
-    return observePanelVisibility(panel.current, setVisible);
-  }, [props.autoForward]);
+    if (!props.autoForward || Platform.OS !== "web" || hostVisible !== undefined) return;
+    return observePanelVisibility(panel.current, setObservedVisible);
+  }, [props.autoForward, hostVisible]);
+  useEffect(() => {
+    revealLifetime.current.abort();
+    revealLifetime.current = createRevealLifetime();
+    return () => revealLifetime.current.abort();
+  }, [props.workspaceId]);
   useEffect(() => {
     if (!props.autoForward || Platform.OS !== "web" || settings.status === "loading" || !folder) return;
     const current = latest.current;
@@ -34,17 +49,18 @@ export function CodiumFilePanel(props: PluginFilePanelProps & { autoForward: boo
     const result = forwardFileNavigation({
       documentEpoch: browserDocumentEpoch(), revision: current.revision,
       targetKey: JSON.stringify([current.host.id, current.workspaceId, resolved.path, line, lineEnd]),
-      // Recheck synchronous geometry before dispatch, even if the observer has
-      // not delivered a newly hidden panel's intersection update yet.
-      visible: visible && panelHasVisibleBounds(panel.current), enabled, state: current.tab.state,
+      // A capable host reports actual visibility; otherwise recheck synchronous
+      // geometry before dispatch, even if the observer has not caught up yet.
+      visible: hostVisible ?? (visible && panelHasVisibleBounds(panel.current)), enabled, state: current.tab.state,
       writeState: current.tab.setState as (state: Record<string, unknown>) => void,
       open: () => current.openEditor(resolved, editorConnectionKey({ codiumBaseUrl: origin, openMode: mode })),
     });
     if (result === "failed") setNavigationMessage("The file could not be sent to VSCodium. Use Open in VSCodium tab to retry.");
     else if (result === "queued") setNavigationMessage("");
-  }, [props.autoForward, settings.status, folder, path, line, lineEnd, origin, mode, visible, props.revision, props.host.id, props.workspaceId]);
+  }, [props.autoForward, settings.status, folder, path, line, lineEnd, origin, mode, visible, hostVisible, props.revision, props.host.id, props.workspaceId]);
   return <View ref={panel} style={{ flex: 1 }}>
-    <CodiumTargetPanel {...props} target={target} navigationMessage={navigationMessage} />
+    <CodiumTargetPanel {...props} target={target} navigationMessage={navigationMessage}
+      revealInFiles={props.revealInFiles ? () => props.revealInFiles!({ signal: revealLifetime.current.signal }) : undefined} />
     <FilePreview key={`${props.host.id}:${props.workspaceId}:${props.file.path}`} file={props.file} theme={props.theme} />
   </View>;
 }

@@ -34,7 +34,8 @@ function IconAction(props: { theme: Theme; icon: string; label: string; color?: 
 
 export function EditorToolbar(props: {
   theme: Theme; externalUrl: string; connection: EditorConnectionIndicator;
-  reconnecting?: boolean; onReconnect?(): void; openSettings(): void; onError(message: string): void;
+  reconnecting?: boolean; onReconnect?(): void; onRevealInFiles?(): void;
+  openSettings(): void; onError(message: string): void;
 }) {
   const { colors } = props.theme;
   const disconnected = props.connection.kind === "disconnected";
@@ -45,6 +46,8 @@ export function EditorToolbar(props: {
       icon={props.connection.kind === "connected" ? "Wifi" : props.connection.kind === "connecting" ? "LoaderCircle" : "WifiOff"}
       color={props.connection.kind === "connected" ? props.connection.dirty ? colors.statusWarning : colors.statusSuccess : colors.foregroundMuted}
       label={message} disabled={props.reconnecting} onPress={disconnected ? props.onReconnect : undefined} /> : null}
+    {props.onRevealInFiles ? <IconAction theme={props.theme} testID="codium-reveal-files" icon="FolderSearch"
+      label="Reveal in Files" onPress={props.onRevealInFiles} /> : null}
     <IconAction theme={props.theme} testID="codium-open-directly" icon="ExternalLink" label="Open directly"
       disabled={!props.externalUrl} onPress={() => { void openExternalUrl(props.externalUrl).catch(() => props.onError("Codium could not be opened directly. Check the connection address in Settings.")); }} />
     <IconAction theme={props.theme} testID="codium-settings" icon="Settings" label="Settings" onPress={props.openSettings} />

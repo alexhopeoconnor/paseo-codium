@@ -2,15 +2,23 @@ import { useSettings, useWorkspace, type PluginWorkspacePanelProps } from "@getp
 import { Loading } from "@getpaseo/plugin/client/ui";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Platform, Pressable, Text, View } from "react-native";
-import { codiumSettings } from "../shared/settings";
+import { codiumPresentationSettings, codiumSettings, PresentationGate } from "../shared/settings";
 import { EmbeddedEditor } from "./embedded-editor";
 import { makeCodiumUrl } from "./web";
 import { editorConnectionKey, editorQueue, type EditorConnection } from "./editor-session";
 import { EditorToolbar } from "./editor-toolbar";
-import type { CloseProtectionResolver } from "./host-capabilities";
+import {
+  tabIsVisible, type CloseProtectionResolver, type HostCapabilities, type RevealFileOptions,
+  type RevealFileResult,
+} from "./host-capabilities";
 
-export function CodiumWorkspacePanel(props: PluginWorkspacePanelProps & { retainEditor: boolean; freshCloseProtection: boolean; openSettings(): void }) {
+export function CodiumWorkspacePanel(props: PluginWorkspacePanelProps & {
+  capabilities: HostCapabilities; retainEditor: boolean; freshCloseProtection: boolean;
+  revealFile?(path: string, intent: "auto" | "explicit", options?: RevealFileOptions): Promise<RevealFileResult>;
+  openSettings(): void;
+}) {
   const settings = useSettings(codiumSettings);
+  const presentation = useSettings(codiumPresentationSettings);
   const directory = useWorkspace(props.workspaceId, (workspace) => workspace.directory);
   const [connection, setConnection] = useState<EditorConnection | null>(null);
   const [protectedEditor, setProtectedEditor] = useState(false);
@@ -18,6 +26,7 @@ export function CodiumWorkspacePanel(props: PluginWorkspacePanelProps & { retain
   const [checkingChange, setCheckingChange] = useState(false);
   const [error, setError] = useState("");
   const beforeClose = useRef<CloseProtectionResolver | null>(null);
+  const presentationGate = useRef(new PresentationGate());
   const setBeforeCloseResolver = useCallback((resolver: CloseProtectionResolver | null) => { beforeClose.current = resolver; }, []);
   useEffect(() => { if (!connection && settings.status === "ready") setConnection(settings.values); }, [connection, settings]);
   if (!connection) return settings.status === "loading" || settings.status === "ready" ? <Loading /> :
@@ -25,6 +34,7 @@ export function CodiumWorkspacePanel(props: PluginWorkspacePanelProps & { retain
   const { colors } = props.theme;
   const changed = settings.status === "ready" && JSON.stringify(connection) !== JSON.stringify(settings.values);
   const embedded = Platform.OS === "web" && connection.openMode === "embedded" && !!connection.codiumBaseUrl && !!directory;
+  const closePrimarySidebar = presentationGate.current.update(presentation);
   let externalUrl = "";
   try { if (directory && connection.codiumBaseUrl) externalUrl = makeCodiumUrl(connection.codiumBaseUrl, directory); } catch { /* Display configuration action below. */ }
   const apply = () => { if (settings.status === "ready") {
@@ -61,7 +71,17 @@ export function CodiumWorkspacePanel(props: PluginWorkspacePanelProps & { retain
           </View>
         </View> : null}
       </View> : null}
-      {embedded && directory ? <EmbeddedEditor {...props} origin={connection.codiumBaseUrl} externalUrl={externalUrl} connectionKey={editorConnectionKey(connection)} onProtectedChange={setProtectedEditor} setBeforeCloseResolver={setBeforeCloseResolver} /> : null}
+      {embedded && directory && closePrimarySidebar !== undefined ? <EmbeddedEditor {...props} origin={connection.codiumBaseUrl} externalUrl={externalUrl} connectionKey={editorConnectionKey(connection)}
+        closePrimarySidebar={closePrimarySidebar}
+        hostVisible={tabIsVisible(props.tab, props.capabilities)}
+        revealFile={props.revealFile}
+        onProtectedChange={setProtectedEditor} setBeforeCloseResolver={setBeforeCloseResolver} /> : null}
+      {embedded && directory && closePrimarySidebar === undefined ? presentation.status === "loading" ? <Loading /> :
+        <Text style={{ padding: 20, color: colors.statusDanger }}>{"error" in presentation ? presentation.error : "Presentation settings are unavailable."}</Text> : null}
+      {embedded && directory && closePrimarySidebar !== undefined && (presentation.status === "error" || presentation.status === "invalid") ?
+        <Text style={{ paddingHorizontal: 14, paddingVertical: 8, color: colors.statusDanger }}>
+          {"error" in presentation ? presentation.error : "Presentation settings are unavailable."} The current editor keeps its last known presentation preference.
+        </Text> : null}
     </View>
   );
 }

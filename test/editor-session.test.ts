@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { EditorQueue, clearEditorQueues, editorConnectionKey, editorQueue, forwardFileNavigation, PENDING_FILE_TTL_MS, resolveEditorCloseProtection, restoredEditorTarget, shouldProtectEditor } from "../client/editor-session";
+import { ActiveFileTracker, EDITOR_POLL_HIDDEN_MS, EDITOR_POLL_VISIBLE_MS, EditorQueue, EditorReceipts, ReceiptInspection, clearEditorQueues, clearEditorReceipts, editorConnectionKey, editorPanelVisible, editorPollDelay, editorQueue, editorReceipts, forwardFileNavigation, PENDING_FILE_TTL_MS, resolveEditorCloseProtection, restoredEditorTarget, revealOpenedFile, shouldProtectEditor, shouldReleaseCreatedSession } from "../client/editor-session";
 import { browserDocumentEpoch, makeBootstrapUrl, mountCodiumFrame, observePanelVisibility, panelHasVisibleBounds } from "../client/web";
 import type { PluginClientContext } from "@getpaseo/plugin/client";
 import { createConfirmedFileOpener } from "../client/file-open";
-import { closeProtectionSetter, readHostCapabilities, type ConfirmedFileOpenContext } from "../client/host-capabilities";
+import { closeProtectionSetter, createRevealLifetime, openPanelOptions, readHostCapabilities, revealPaseoFile, tabIsVisible, type ConfirmedFileOpenContext } from "../client/host-capabilities";
+import { presentationPreferenceSchema } from "../shared/settings";
+import { RECEIPT_TTL_MS } from "../shared/receipts";
 import type { PluginTab } from "@getpaseo/plugin/client";
 
 const connectionA = editorConnectionKey({ codiumBaseUrl: "https://a.example.com", openMode: "embedded" });
@@ -42,6 +44,13 @@ describe("confirmed host file opens", () => {
     expect(queue.peek()).toMatchObject({ requestId: "request_first", connectionKey: connectionA, target: { path: "/worktree/src/main.ts", line: 4, lineEnd: 8 } });
     expect(editorQueue("host-b", "workspace-a").peek()).toBeUndefined();
   });
+  it("rejects a conflicting target reuse for the same host request id before routing again", async () => {
+    const f = fixture();
+    await f.open(f.request);
+    expect(() => f.open({ ...f.request, path: "src/other.ts" })).toThrow("reused for a different file");
+    expect(f.openPanel).toHaveBeenCalledOnce();
+    expect(editorQueue("host-a", "workspace-a").peek()?.target.path).toBe("/worktree/src/main.ts");
+  });
   it("coalesces one intent through asynchronous resolution and completion but allows an intentional repeat", async () => {
     const f = fixture();
     const first = f.open(f.request);
@@ -78,6 +87,26 @@ describe("confirmed host file opens", () => {
     workspace.refresh.mockImplementation(async () => { workspaceSignal.aborted = true; return { workspaceDirectory: "/worktree" }; });
     await expect(workspace.open({ ...workspace.request, signal: workspaceSignal })).rejects.toMatchObject({ name: "AbortError" });
     expect(workspace.openPanel).not.toHaveBeenCalled();
+  });
+  it("never reports an in-flight RPC as not sent when aborted or the connection changes", () => {
+    const signal = { aborted: false }, queue = new EditorQueue();
+    queue.enqueue({ connectionKey: connectionA, requestId: "request_inflight_abort", target: { path: "/a" }, signal });
+    editorReceipts.advance("request_inflight_abort", "execution", "sent");
+    signal.aborted = true;
+    queue.takeExpiredNotice();
+    expect(queue.peek()).toBeUndefined();
+    expect(editorReceipts.get("request_inflight_abort")).toMatchObject({
+      outcome: "uncertain", dispatched: true, reason: "cancelled",
+    });
+
+    const changed = new EditorQueue();
+    changed.enqueue({ connectionKey: connectionA, requestId: "request_inflight_change", target: { path: "/b" } });
+    editorReceipts.advance("request_inflight_change", "execution", "sent");
+    changed.discardOtherConnections(connectionB);
+    expect(changed.peek()).toBeUndefined();
+    expect(editorReceipts.get("request_inflight_change")).toMatchObject({
+      outcome: "uncertain", dispatched: true, reason: "connection_changed",
+    });
   });
   it("drops a cancelled pending command without reporting expiration or reviving it", async () => {
     const f = fixture(), signal = { aborted: false };
@@ -411,6 +440,288 @@ describe("automatic file-open intents", () => {
     expect(forwardFileNavigation(input)).toBe("failed");
     expect(forwardFileNavigation(input)).toBe("unchanged");
     expect(p.open).not.toHaveBeenCalled();
+  });
+});
+
+describe("file-open receipt memory", () => {
+  afterEach(() => clearEditorReceipts());
+  it("advances diagnostic stages monotonically through route, probe, pairing, bridge, queue and ack", () => {
+    const receipts = new EditorReceipts();
+    expect(receipts.begin("request_stage")).toMatchObject({ stage: "host_route", outcome: "pending", dispatched: false });
+    receipts.advance("request_stage", "access_probe");
+    receipts.advance("request_stage", "pairing");
+    receipts.advance("request_stage", "bridge");
+    receipts.advance("request_stage", "queue", "queued");
+    receipts.merge("request_stage", {
+      version: 2, correlationId: "request_stage", requestId: "request_stage", stage: "execution",
+      outcome: "sent", dispatched: true, updatedAt: 10, expiresAt: 20,
+    });
+    const opened = receipts.advance("request_stage", "ack", "opened");
+    expect(opened).toMatchObject({ stage: "ack", outcome: "opened", dispatched: true });
+    // A terminal outcome never regresses because a stale diagnostic arrives later.
+    expect(receipts.advance("request_stage", "queue", "queued")).toMatchObject({ stage: "ack", outcome: "opened" });
+    expect(receipts.merge("request_stage", {
+      version: 2, correlationId: "request_stage", requestId: "request_stage", stage: "queue",
+      outcome: "queued", dispatched: false, updatedAt: 30, expiresAt: 40,
+    })).toMatchObject({ stage: "ack", outcome: "opened" });
+  });
+  it("treats a null or expired server receipt as unknown, never not_sent", () => {
+    const receipts = new EditorReceipts();
+    receipts.begin("request_unknown");
+    receipts.advance("request_unknown", "queue", "queued");
+    expect(receipts.merge("request_unknown", null)).toMatchObject({ outcome: "queued" });
+    expect(receipts.get("request_never_seen")).toBeUndefined();
+  });
+  it("prunes expired terminal receipts before begin/retry so they are not returned as retained", () => {
+    let now = 1000;
+    const receipts = new EditorReceipts(() => now);
+    receipts.begin("request_expired");
+    receipts.advance("request_expired", "ack", "opened");
+    now += RECEIPT_TTL_MS + 1;
+    // begin must not return the expired opened receipt.
+    expect(receipts.begin("request_expired")).toMatchObject({ outcome: "pending", stage: "host_route" });
+    now += RECEIPT_TTL_MS + 1;
+    receipts.advance("request_expired", "ack", "opened");
+    now += RECEIPT_TTL_MS + 1;
+    // retry also treats expired memory as UNKNOWN and starts a fresh pending state.
+    expect(receipts.retry("request_expired")).toMatchObject({ outcome: "pending", stage: "host_route" });
+  });
+  it("guards Check outcome against a slow receipt for a replaced request and out-of-order repeats", () => {
+    const inspection = new ReceiptInspection();
+    inspection.show("request_a");
+    const firstA = inspection.begin()!;
+    inspection.show("request_b");
+    expect(inspection.accepts(firstA)).toBe(false);
+    const firstB = inspection.begin()!;
+    expect(inspection.accepts(firstB)).toBe(true);
+    // A repeated check invalidates the earlier in-flight query for the same request.
+    const secondB = inspection.begin()!;
+    expect(inspection.accepts(firstB)).toBe(false);
+    expect(inspection.accepts(secondB)).toBe(true);
+    inspection.show("request_b");
+    expect(inspection.accepts(secondB)).toBe(false);
+    inspection.clear();
+    expect(inspection.begin()).toBeUndefined();
+  });
+  it("expires only terminal receipts and keeps a pending request queryable", () => {
+    let now = 1000;
+    const receipts = new EditorReceipts(() => now);
+    receipts.begin("request_pending");
+    now += RECEIPT_TTL_MS + 1;
+    expect(receipts.get("request_pending")).toMatchObject({ outcome: "pending" });
+    receipts.advance("request_pending", "execution", "uncertain", "timeout");
+    expect(receipts.get("request_pending")).toMatchObject({ outcome: "uncertain" });
+    now += RECEIPT_TTL_MS + 1;
+    expect(receipts.get("request_pending")).toBeUndefined();
+  });
+  it("keeps client memory bounded and never evicts a pending identity", () => {
+    let now = 1000;
+    const receipts = new EditorReceipts(() => now);
+    for (let index = 0; index < 130; index++) {
+      receipts.begin(`request_${index}`);
+      receipts.advance(`request_${index}`, "ack", "opened");
+      now += 1;
+    }
+    expect(receipts.get("request_0")).toBeUndefined();
+    expect(receipts.get("request_129")).toMatchObject({ outcome: "opened" });
+  });
+  it("retains non-expired uncertain outcomes and reports explicit capacity instead of untracked admission", () => {
+    const receipts = new EditorReceipts();
+    for (let index = 0; index < 128; index++) {
+      receipts.begin(`request_uncertain_${index}`);
+      receipts.advance(`request_uncertain_${index}`, "execution", "uncertain", "timeout");
+    }
+    const next = receipts.begin("request_over_capacity");
+    expect(next).toMatchObject({ outcome: "not_sent", reason: "capacity", dispatched: false });
+    expect(receipts.get("request_uncertain_0")).toMatchObject({ outcome: "uncertain" });
+    expect(receipts.get("request_over_capacity")).toBeUndefined();
+  });
+  it("reveals after a delayed open ACK as a fresh panel-scoped navigation, not a settled host request", () => {
+    const reveal = vi.fn(), queue = new EditorQueue();
+    queue.enqueue({ connectionKey: connectionA, requestId: "request_delayed", target: { path: "/worktree/src/main.ts" } });
+    // The host onOpen handler has already returned handled after queue admission;
+    // the editor then reconnects and acknowledges later.
+    queue.complete("request_delayed", connectionA, "opened");
+    expect(revealOpenedFile({ reveal, directory: "/worktree", path: "/worktree/src/main.ts" })).toBe(true);
+    expect(reveal.mock.calls).toEqual([["src/main.ts"]]);
+    expect(editorReceipts.get("request_delayed")).toMatchObject({
+      correlationId: "request_delayed", outcome: "opened",
+    });
+  });
+  it("does not reveal after the workspace panel is disposed while the open is waiting", () => {
+    const reveal = vi.fn();
+    expect(revealOpenedFile({ reveal, directory: "/worktree", path: "/worktree/a.ts", isCurrent: () => false })).toBe(false);
+    expect(reveal).not.toHaveBeenCalled();
+  });
+  it("does not admit a queue request when every tracking slot is an uncertain outcome", () => {
+    for (let index = 0; index < 128; index++) {
+      editorReceipts.begin(`request_uncertain_${index}`);
+      editorReceipts.advance(`request_uncertain_${index}`, "execution", "uncertain", "timeout");
+    }
+    const queue = new EditorQueue();
+    expect(() => queue.enqueue({ connectionKey: connectionA, requestId: "request_untracked", target: { path: "/file" } })).toThrow("tracked file requests");
+    expect(queue.peek()).toBeUndefined();
+    expect(editorReceipts.get("request_untracked")).toBeUndefined();
+  });
+});
+
+describe("poll and session ownership guards", () => {
+  it("requires both host tab visibility and document visibility for the fast poll", () => {
+    expect(editorPanelVisible(true, true, true)).toBe(true);
+    expect(editorPanelVisible(true, true, false)).toBe(false); // hidden browser
+    expect(editorPanelVisible(false, true, true)).toBe(false); // hidden host tab
+    expect(editorPanelVisible(undefined, true, false)).toBe(false);
+    expect(editorPanelVisible(undefined, true, true)).toBe(true);
+  });
+  it("releases a created session superseded by a deferred overlapping retry", () => {
+    expect(shouldReleaseCreatedSession({ disposed: false, attempt: 1, currentAttempt: 2, hasSession: false })).toBe(true);
+    expect(shouldReleaseCreatedSession({ disposed: true, attempt: 1, currentAttempt: 1, hasSession: false })).toBe(true);
+    expect(shouldReleaseCreatedSession({ disposed: false, attempt: 1, currentAttempt: 1, hasSession: true })).toBe(true);
+    expect(shouldReleaseCreatedSession({ disposed: false, attempt: 1, currentAttempt: 1, hasSession: false })).toBe(false);
+  });
+});
+
+describe("active file observation", () => {
+  it("prevents an old cached file from overriding a confirmed target and reveals only actual changes", () => {
+    const tracker = new ActiveFileTracker();
+    const pollEpoch = tracker.epoch;
+    tracker.confirm("src/new.ts", 10);
+    // A cached poll that started before the ACK cannot apply afterwards.
+    expect(tracker.observe("src/old.ts", 11, pollEpoch)).toMatchObject({ changed: false });
+    expect(tracker.observe("src/old.ts", 10)).toMatchObject({ changed: false });
+    expect(tracker.current).toBe("src/new.ts");
+    expect(tracker.observe("src/new.ts", 11)).toMatchObject({ changed: false });
+    expect(tracker.observe("src/old.ts", 12)).toMatchObject({ changed: true, reveal: "src/old.ts" });
+    expect(tracker.observe("src/old.ts", 13)).toMatchObject({ changed: false });
+    expect(tracker.observe(null, 14)).toMatchObject({ changed: true, activeFile: null });
+    expect(tracker.observe(undefined, 15)).toMatchObject({ changed: false });
+    expect(tracker.current).toBeNull();
+  });
+  it("fences an ahead cached poll with a fresh snapshot boundary after the open ACK", () => {
+    const tracker = new ActiveFileTracker();
+    tracker.observe("src/a.ts", 2);
+    tracker.confirm("src/b.ts", 2);
+    const fresh = tracker.beginFresh();
+    // Poll started after the ACK can still return server-cached seq 4 / file A.
+    expect(tracker.observe("src/a.ts", 4)).toMatchObject({ changed: false });
+    expect(tracker.current).toBe("src/b.ts");
+    expect(tracker.resolveFresh("src/b.ts", 5, fresh)).toMatchObject({ changed: false });
+    // The real boundary is now 5; the old seq-4 cached file cannot replace B.
+    expect(tracker.observe("src/a.ts", 4)).toMatchObject({ changed: false });
+    expect(tracker.current).toBe("src/b.ts");
+    expect(tracker.observe("src/c.ts", 6)).toMatchObject({ changed: true, reveal: "src/c.ts" });
+  });
+  it("keeps the confirmed target and blocks stale polls if the fresh boundary fails", () => {
+    const tracker = new ActiveFileTracker();
+    tracker.confirm("src/b.ts", 2);
+    const fresh = tracker.beginFresh();
+    tracker.failFresh(fresh);
+    expect(tracker.observe("src/a.ts", 100)).toMatchObject({ changed: false });
+    expect(tracker.current).toBe("src/b.ts");
+    // A superseded snapshot token cannot resolve after a newer confirmation.
+    const stale = tracker.beginFresh();
+    tracker.confirm("src/c.ts", 3);
+    expect(tracker.resolveFresh("src/a.ts", 101, stale)).toBeUndefined();
+    expect(tracker.current).toBe("src/c.ts");
+  });
+  it("resynchronizes once after a failed boundary, then applies a manual C change", () => {
+    const tracker = new ActiveFileTracker();
+    tracker.confirm("src/b.ts", 2);
+    tracker.failFresh(tracker.beginFresh());
+    expect(tracker.needsResync).toBe(true);
+    // The normal poll/refresh retry begins one fresh query and suspends polls.
+    const retry = tracker.beginFresh();
+    expect(tracker.awaitingFresh).toBe(true);
+    expect(tracker.observe("src/c.ts", 100)).toMatchObject({ changed: false });
+    expect(tracker.resolveFresh("src/b.ts", 101, retry)).toMatchObject({ changed: false });
+    expect(tracker.needsResync).toBe(false);
+    // Recovery is proven; a later manual C state is applied and revealed once.
+    expect(tracker.observe("src/c.ts", 102)).toMatchObject({ changed: true, reveal: "src/c.ts" });
+    expect(tracker.observe("src/c.ts", 103)).toMatchObject({ changed: false });
+  });
+  it("handles rapid state changes without a repeated reveal for the same file", () => {
+    const tracker = new ActiveFileTracker();
+    const observed = ["src/a.ts", "src/b.ts", "src/b.ts", "src/c.ts", null, null];
+    const changes = observed.map((file, index) => tracker.observe(file, index + 1));
+    expect(changes.map((change) => change.changed)).toEqual([true, true, false, true, true, false]);
+    expect(changes.filter((change) => change.reveal).map((change) => change.reveal)).toEqual(["src/a.ts", "src/b.ts", "src/c.ts"]);
+  });
+});
+
+describe("approved host capability adapter", () => {
+  const client = {} as PluginClientContext;
+  it("reads only version 1 capability names it understands", () => {
+    expect(readHostCapabilities({ ...client, capabilities: {
+      confirmedFileOpen: 1, workspacePanelRetention: 1, workspacePanelCloseProtection: 1,
+      requestBoundPanelPlacement: 1, workspacePanelVisibility: 1, fileReveal: 1, textFilePanels: 1,
+    } } as PluginClientContext)).toEqual({
+      confirmedFileOpen: 1, workspacePanelRetention: 1, workspacePanelCloseProtection: 1,
+      requestBoundPanelPlacement: 1, workspacePanelVisibility: 1, fileReveal: 1, textFilePanels: 1,
+    });
+    expect(readHostCapabilities({ ...client, capabilities: {
+      requestBoundPanelPlacement: 2, workspacePanelVisibility: true, fileReveal: 1, textFilePanels: 2,
+    } } as PluginClientContext)).toMatchObject({ requestBoundPanelPlacement: undefined, workspacePanelVisibility: undefined, textFilePanels: undefined });
+  });
+  it("sends the original request id only to a request-bound host", () => {
+    expect(openPanelOptions({}, "workspace-a", "request_1234")).toEqual({ workspaceId: "workspace-a" });
+    expect(openPanelOptions({ requestBoundPanelPlacement: 1 }, "workspace-a")).toEqual({ workspaceId: "workspace-a" });
+    expect(openPanelOptions({ requestBoundPanelPlacement: 1 }, "workspace-a", "request_1234"))
+      .toEqual({ workspaceId: "workspace-a", requestId: "request_1234" });
+  });
+  it("uses actual tab visibility only from a capable host", () => {
+    const tab = { visible: true } as unknown as PluginTab;
+    expect(tabIsVisible(tab, {})).toBeUndefined();
+    expect(tabIsVisible(tab, { workspacePanelVisibility: 1 })).toBe(true);
+    expect(tabIsVisible({ visible: false } as unknown as PluginTab, { workspacePanelVisibility: 1 })).toBe(false);
+    expect(tabIsVisible({} as PluginTab, { workspacePanelVisibility: 1 })).toBeUndefined();
+  });
+  it("invokes the optional Paseo-tree reveal API only for a capable host and never opens an editor", async () => {
+    const input = { workspaceId: "workspace-a", path: "src/main.ts", source: "editor" as const, intent: "auto" as const };
+    const revealFile = vi.fn(async (): Promise<unknown> => ({ status: "revealed" }));
+    const capable = { revealFile } as unknown as PluginClientContext;
+    expect(await revealPaseoFile(capable, {}, input)).toBe("unsupported");
+    expect(revealFile).not.toHaveBeenCalled();
+    expect(await revealPaseoFile(capable, { fileReveal: 1 }, input)).toBe("revealed");
+    expect(revealFile).toHaveBeenCalledWith(input, undefined);
+    revealFile.mockResolvedValueOnce({ status: "cancelled" });
+    expect(await revealPaseoFile(capable, { fileReveal: 1 }, input)).toBe("cancelled");
+    revealFile.mockResolvedValueOnce({ status: "unavailable", reason: "hidden" });
+    expect(await revealPaseoFile(capable, { fileReveal: 1 }, input)).toBe("unavailable");
+    revealFile.mockRejectedValueOnce(new Error("cancelled"));
+    expect(await revealPaseoFile(capable, { fileReveal: 1 }, input)).toBe("unavailable");
+  });
+  it("aborts a panel-scoped reveal signal after invocation and before the host listing/ACK", async () => {
+    const lifetime = createRevealLifetime();
+    const input = { workspaceId: "workspace-a", path: "src/main.ts", source: "editor" as const, intent: "explicit" as const };
+    let observed: { readonly aborted: boolean } | undefined;
+    let finish!: (result: unknown) => void;
+    const hostResult = new Promise((resolve) => { finish = resolve; });
+    const revealFile = vi.fn((_input, options) => { observed = options?.signal; return hostResult; });
+    const capable = { revealFile } as unknown as PluginClientContext;
+    const pending = revealPaseoFile(capable, { fileReveal: 1 }, input, { signal: lifetime.signal });
+    await Promise.resolve();
+    expect(observed).toBe(lifetime.signal);
+    expect(observed?.aborted).toBe(false);
+    lifetime.abort();
+    expect(observed?.aborted).toBe(true);
+    finish({ status: "revealed" });
+    await expect(pending).resolves.toBe("revealed");
+    expect(revealFile).toHaveBeenCalledWith(input, { signal: lifetime.signal });
+  });
+  it("uses 2s visible and 15s hidden display polling; close snapshots do not use this cache", () => {
+    expect(editorPollDelay(true)).toBe(2_000);
+    expect(editorPollDelay(false)).toBe(15_000);
+    expect(EDITOR_POLL_VISIBLE_MS).toBe(2_000);
+    expect(EDITOR_POLL_HIDDEN_MS).toBe(15_000);
+  });
+});
+
+describe("Codium presentation preference", () => {
+  it("defaults to closing the Codium sidebar once and is not part of connection identity", () => {
+    expect(presentationPreferenceSchema.parse({})).toEqual({ closePrimarySidebar: true });
+    const connection = { codiumBaseUrl: "https://a.example.com", openMode: "embedded" as const };
+    expect(editorConnectionKey(connection)).toBe(editorConnectionKey({ ...connection }));
+    expect(editorConnectionKey(connection)).not.toContain("closePrimarySidebar");
   });
 });
 

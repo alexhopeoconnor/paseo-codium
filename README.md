@@ -9,6 +9,13 @@ Capable Paseo hosts dispatch confirmed file opens directly to that editor and
 retain it while backgrounded. Stock hosts keep a read-only file preview alongside
 the editor. External mode opens Codium in a browser tab.
 
+Embedded startup first checks authenticated access through a same-origin
+`/_paseo/ready` helper, then allocates the two-minute pairing capability and
+mounts the editor. File-open receipts carry one correlation ID through the host
+route, access check, pairing, bridge, queue, execution and acknowledgement. They
+distinguish a request that was never sent from one whose outcome is unknown;
+unknown outcomes are never retried automatically.
+
 ## Setup
 
 Requires a reviewed workstation-fork release and VSCodium Web with access to the
@@ -30,11 +37,19 @@ Select an exact commit using the fork's
 [installation guide](https://github.com/alexhopeoconnor/paseo/tree/workstation#optional-workstation-plugins).
 No private infrastructure repository or artifact registry is required.
 
-Build the plugin and companion from that same revision. The current companion is
-`alexhopeoconnor.paseo-codium-bridge@0.1.2`, protocol `1`. Install its verified VSIX
-with Codium's server launcher and the same data and extension directories as the
-running service. Save edits and close editor sessions before updating either
-component.
+Build the plugin and companion from that same revision. The current pair is plugin
+`0.4.0` with companion `alexhopeoconnor.paseo-codium-bridge@0.2.0`, protocol `2`.
+Install its verified VSIX with Codium's server launcher and the same data and
+extension directories as the running service. Protocol 2 requires both components
+from the same reviewed revision; an older peer is rejected with a generic
+incompatible-version error. Save edits and close editor sessions before updating
+either component.
+
+The Codium endpoint must serve the reviewed static access helper at
+`/_paseo/ready` behind the same authentication as the IDE. The helper receives a
+128-bit nonce in the URL fragment, posts one `paseo-codium-access-ready` message to
+the configured exact Paseo origin, and never receives credentials. It proves
+same-origin authenticated access only, not Codium backend or companion health.
 
 ## Use
 
@@ -49,21 +64,57 @@ component.
   status. Hover or focus an icon for its hint; click a disconnected status icon
   to reconnect. Open directly keeps the same workspace folder and can renew your
   browser login when needed. The plugin stores no browser credentials.
+- Embedded startup checks Codium access before it pairs. If access is unconfirmed,
+  use **Sign in to editor** to open only the helper page in a top-level window, or
+  **Check again**. Returning to Paseo starts a new access check and pairing; a
+  timeout is an unconfirmed access result, not an authentication verdict.
+- A new paired Codium window closes Codium's own primary sidebar once, so the
+  editor opens with more room. Reopen the sidebar from Codium at any time. The
+  **Codium primary sidebar** setting applies to newly paired windows, is not part
+  of the connection identity, and never reloads the editor. Standalone Codium
+  windows are unaffected.
 - Saving connection settings leaves open editors unchanged until **Apply changed
   connection settings**. Pending files wait for the intended connection and expire
   after five minutes. A full browser refresh clears pending requests.
 - Dirty or unknown editors require confirmation before closing, reconnecting or
-  changing connection. Hosts with `workspacePanelCloseProtection: 1` query fresh
-  paired-window state at close time, so focusing a clean editor does not mark it
-  modified. Stock hosts retain conservative focus protection. Save files in Codium
-  before confirming a protected close.
+  changing connection. Hosts with `workspacePanelCloseProtection: 1` request a new
+  paired-window snapshot at close time, so focusing a clean editor does not mark it
+  modified. Routine display state uses the cached heartbeat poll instead: every two
+  seconds while the editor panel is visible and every fifteen seconds while hidden,
+  with an immediate refresh when the panel or browser becomes visible again. The
+  five-second companion heartbeat and fresh close snapshot do not depend on this
+  display poll. Stock hosts retain conservative focus protection. Save files in
+  Codium before confirming a protected close.
 - Hosts advertising `confirmedFileOpen: 1` send files only after confirming the
-  viewer choice, without an intermediate file tab. One request ID follows the
-  navigation through the existing companion queue. Cancelling its host/workspace
-  lifetime drops pending navigation. Hosts advertising `workspacePanelRetention: 1`
-  retain mounted embedded editors independently from unsaved-change protection.
-  Close the editor explicitly to release it; retention does not survive browser
-  refresh or process termination.
+  viewer choice, without an intermediate file tab. One request ID is the
+  correlation ID for the receipt through routing, queueing, execution and
+  acknowledgement. Duplicate delivery joins the same receipt; reusing the ID for a
+  different target fails without executing. Cancelling a request before dispatch
+  is reported as not sent. Cancelling after dispatch is best effort and leaves the
+  outcome uncertain rather than claiming the editor did not run.
+- An unknown outcome, including a lost acknowledgement or disconnect after the
+  request was written, is retained for fifteen minutes and can be queried by its
+  request ID. A failed or unconfirmed open shows the correlation ID, current
+  outcome and diagnostic stage with **Check outcome**. That action only reads the
+  retained receipt; it never resends the file. A null or expired receipt is shown
+  as unknown, never as not sent. The plugin never reuses an unknown identity for an
+  automatic retry; open the file again to create a new intentional request. Receipt
+  memory is bounded and process-local, so it is not a crash exactly-once guarantee.
+- Hosts advertising `workspacePanelRetention: 1` retain mounted embedded editors
+  independently from unsaved-change protection. The retained editor keeps the same
+  iframe and browser window. Close the editor explicitly to release it; retention
+  does not survive browser refresh or process termination.
+- A host may optionally provide request-bound panel placement, actual panel
+  visibility, bounded text-file classification and scoped Paseo-tree reveal. The
+  plugin uses those only when advertised and otherwise keeps the reviewed
+  extension/filename selectors and focus-based fallbacks. Codium reports its active
+  local file, workspace-relative, in the existing coalesced state/heartbeat. Actual
+  active-file changes, including manual tab changes, ask a capable host for a
+  passive Files selection without opening Files or changing focus. **Reveal in
+  Files** is explicit and targets the current observed active file; null, outside
+  the workspace, non-file or unknown active files disable it. Neither action opens
+  another editor tab, and a reveal after a delayed open is a fresh panel-scoped
+  request rather than the already-settled host file-open identity.
 
 ## Limits
 
@@ -81,6 +132,18 @@ component.
   more than four Mermaid blocks remain in Source mode.
 - External URLs cannot jump to a line in filenames containing colons. Connected
   companion navigation supports them.
+- The companion reports only an active local file inside its single verified
+  workspace. Non-file editors, files outside that workspace and unsafe relative
+  paths report null, so they cannot drive a Files reveal.
+- The access helper must be deployed at the same Codium origin and protected by the
+  same forward authentication. Without it, embedded startup stays unconfirmed and
+  does not allocate pairing. The helper does not establish IDE backend health,
+  companion installation or bridge availability.
+- Access checks in the automated suite use a synthetic browser frame. They do not
+  prove a real Firefox/forward-auth session, cookie policy or deployed helper.
+- Receipts are bounded diagnostic memory, not a durable transaction log. A process
+  crash, expired receipt or evicted terminal receipt can make an outcome unknown
+  again; the plugin reports that as unknown and never as not sent.
 - Workspace folders are navigation context, not a filesystem sandbox. Both
   applications retain their host account's access. Embedding requires the Codium
   endpoint to allow Paseo in its framing policy.

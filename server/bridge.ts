@@ -1,8 +1,11 @@
 import { createServer, createConnection, type Socket } from "node:net";
 import { chmod, lstat, mkdir, unlink } from "node:fs/promises";
 import { join, isAbsolute } from "node:path";
-import { MessageFramer, parseCompanionMessage } from "../shared/wire";
+import { MessageFramer, PROTOCOL_VERSION, parseCompanionMessage, type CompanionMessage } from "../shared/wire";
 import { EditorSessions, type Session } from "./sessions";
+
+const MAX_QUEUED_CONTROLS = 32;
+const MAX_QUEUED_MESSAGES = 64;
 
 export function bridgeSocketPath(): string {
   const runtime = process.env.XDG_RUNTIME_DIR || (process.getuid ? `/run/user/${process.getuid()}` : "");
@@ -61,33 +64,70 @@ export class EditorBridge {
     this.sockets.add(socket);
     socket.setTimeout(30_000, () => socket.destroy());
     const framer = new MessageFramer();
+    const queue: CompanionMessage[] = [];
     let session: Session | undefined;
-    let chain = Promise.resolve(); let queued = 0; let failed = false;
-    socket.on("data", (data: Buffer) => {
-      let frames: Uint8Array[];
-      try { frames = framer.push(data); } catch { socket.destroy(); return; }
-      for (const frame of frames) {
-        const line = Buffer.from(frame).toString("utf8");
-        if (++queued > 32 || failed) { socket.destroy(); return; }
-        chain = chain.then(async () => {
-          if (failed || socket.destroyed) return;
-          const message = parseCompanionMessage(JSON.parse(line));
-          if (message.type === "hello") {
-            if (session) throw new Error("Editor is already bound.");
-            session = await this.sessions.bind(message.bootstrapKey, message.workspace, message.windowId, message.connectionId, socket);
-            socket.write(JSON.stringify({ protocol: 1, type: "bound", sessionId: session.id }) + "\n");
-          } else {
-            if (!session) throw new Error("Pair this editor before sending state.");
-            if (message.type === "state") this.sessions.update(session, message.sequence, message.dirty);
-            else if (message.type === "snapshot") this.sessions.snapshot(session, message.requestId, message.sequence, message.dirty);
-            else this.sessions.result(session, message.requestId, message.ok, message.error);
-          }
-        }).catch(() => {
-          failed = true;
-          // Never echo malformed messages, keys, paths or raw parse errors.
-          socket.end(JSON.stringify({ protocol: 1, type: "error", message: "Editor connection rejected. Reconnect from Paseo." }) + "\n");
-        }).finally(() => { queued--; });
+    let running = false;
+    let failed = false;
+    let controlCount = 0;
+    const reject = () => {
+      if (failed) return;
+      failed = true; queue.length = 0;
+      // Never echo malformed messages, keys, paths or raw parse errors.
+      const payload = JSON.stringify({ protocol: PROTOCOL_VERSION, type: "error", message: "Editor connection rejected. Check the matching plugin and companion versions, then reconnect from Paseo." }) + "\n";
+      socket.end(payload, () => socket.destroy());
+    };
+    const handle = async (message: CompanionMessage) => {
+      if (message.type === "hello") {
+        if (session) throw new Error("Editor is already bound.");
+        session = await this.sessions.bind(message.bootstrapKey, message.workspace, message.windowId, message.connectionId, socket);
+        socket.write(JSON.stringify({ protocol: PROTOCOL_VERSION, type: "bound", sessionId: session.id }) + "\n");
+        if (session.presentation.closePrimarySidebar) {
+          socket.write(JSON.stringify({ protocol: PROTOCOL_VERSION, type: "presentation", primarySidebar: "close-once" }) + "\n");
+        }
+      } else {
+        if (!session) throw new Error("Pair this editor before sending state.");
+        if (message.type === "state") this.sessions.update(session, message.sequence, message.dirty, message.activeFile);
+        else if (message.type === "snapshot") this.sessions.snapshot(session, message.requestId, message.sequence, message.dirty, message.activeFile);
+        else this.sessions.result(session, message.requestId, message.ok, message.error);
       }
+    };
+    const pump = () => {
+      if (running || failed) return;
+      running = true;
+      void (async () => {
+        while (!failed) {
+          const message = queue.shift();
+          if (!message) break;
+          if (message.type !== "state") controlCount--;
+          try { await handle(message); } catch { reject(); return; }
+        }
+      })().finally(() => {
+        running = false;
+        if (!failed && queue.length) pump();
+      });
+    };
+    socket.on("data", (data: Buffer) => {
+      if (failed) return;
+      let frames: Uint8Array[];
+      try { frames = framer.push(data); } catch { reject(); return; }
+      for (const frame of frames) {
+        let message: CompanionMessage;
+        try { message = parseCompanionMessage(JSON.parse(Buffer.from(frame).toString("utf8"))); } catch { reject(); return; }
+        if (message.type === "state") {
+          // Only a consecutive replaceable state run coalesces. A control message
+          // is a barrier: later state can never move ahead of it, preserving order.
+          const last = queue[queue.length - 1];
+          if (last?.type === "state") queue[queue.length - 1] = message;
+          else {
+            if (queue.length >= MAX_QUEUED_MESSAGES) { socket.destroy(); return; }
+            queue.push(message);
+          }
+        } else {
+          if (++controlCount > MAX_QUEUED_CONTROLS || queue.length >= MAX_QUEUED_MESSAGES) { socket.destroy(); return; }
+          queue.push(message);
+        }
+      }
+      pump();
     });
     socket.on("error", () => {});
     socket.on("close", () => { this.sockets.delete(socket); if (session) this.sessions.disconnected(session, socket); });

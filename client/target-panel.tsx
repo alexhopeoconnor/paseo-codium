@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Platform, Pressable, Text, View } from "react-native";
 import { codiumSettings } from "../shared/settings";
 import { editorConnectionKey } from "./editor-session";
+import type { RevealFileResult } from "./host-capabilities";
 import { makeCodiumUrl, resolveWorkspaceFile, type FileTarget } from "./web";
 
 interface TargetPanelProps extends PluginSurfaceProps {
@@ -11,6 +12,7 @@ interface TargetPanelProps extends PluginSurfaceProps {
   target: FileTarget;
   openSettings(): void;
   openEditor(target: FileTarget, connectionKey: string): void;
+  revealInFiles?(): Promise<RevealFileResult>;
   navigationMessage?: string;
 }
 
@@ -45,6 +47,14 @@ export function CodiumTargetPanel(props: TargetPanelProps) {
         catch { setActionMessage("The editor could not accept this request. Try again after it connects."); }
       }}>
         <Text style={{ color: colors.accent, fontWeight: "600" }}>Open in VSCodium tab</Text>
+      </Pressable> : null}
+      {props.revealInFiles ? <Pressable accessibilityRole="button" testID="codium-reveal-files" onPress={() => {
+        void props.revealInFiles!().then((outcome) => {
+          setActionMessage(outcome === "revealed" ? "Revealed in Paseo Files." :
+            outcome === "cancelled" ? "Reveal cancelled." : "Paseo Files could not reveal this file.");
+        }, () => setActionMessage("Paseo Files could not reveal this file."));
+      }}>
+        <Text style={{ color: colors.foregroundMuted }}>Reveal in Files</Text>
       </Pressable> : null}
       {url ? <>
         <ExternalLink href={url} testID="codium-open" onError={(error) => setActionMessage(messageOf(error))}>

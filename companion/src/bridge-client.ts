@@ -2,13 +2,25 @@ import { createConnection, type Socket } from "node:net";
 import { randomUUID } from "node:crypto";
 import { lstat } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
-import { MessageFramer, parseBrokerMessage, type FileTarget } from "../../shared/wire";
+import { MessageFramer, PROTOCOL_VERSION, parseBrokerMessage, type FileTarget } from "../../shared/wire";
 
+const MAX_RESULTS = 64;
+interface ResultEntry {
+  fingerprint: string;
+  promise: Promise<void>;
+  settled: boolean;
+  ok?: boolean;
+  cancelled: boolean;
+  delivered: boolean;
+}
 interface EditorAdapter {
   windowId: string;
   workspace: string;
   dirty(): boolean;
+  activeFile(): string | null;
   open(target: FileTarget, isCurrent: () => boolean): Promise<void>;
+  /** Presentation command; the host editor may not expose this action. */
+  closePrimarySidebar?(): void | Promise<void>;
   status(connected: boolean): void;
 }
 export class BridgeClient {
@@ -20,10 +32,12 @@ export class BridgeClient {
   private disposed = false;
   private rejected = false;
   private generation = 0;
+  private sidebarApplied = false;
   private readonly connectionId = randomUUID();
   private reconnect?: ReturnType<typeof setTimeout>;
+  private stateTimer?: ReturnType<typeof setTimeout>;
   private readonly heartbeat = setInterval(() => this.sendState(), 5000);
-  private readonly results = new Map<string, { fingerprint: string; promise: Promise<void> }>();
+  private readonly results = new Map<string, ResultEntry>();
   constructor(private readonly editor: EditorAdapter) { this.heartbeat.unref?.(); }
   pair(capability: string): Promise<void> {
     if (this.disposed || this.rejected) return Promise.reject(new Error("This editor binding is no longer available. Reconnect from Paseo."));
@@ -56,7 +70,7 @@ export class BridgeClient {
       timeout.unref?.();
       socket.on("connect", () => {
         if (!isCurrent()) { socket.destroy(); return; }
-        socket.write(JSON.stringify({ protocol: 1, type: "hello", bootstrapKey: this.capability, windowId: this.editor.windowId,
+        socket.write(JSON.stringify({ protocol: PROTOCOL_VERSION, type: "hello", bootstrapKey: this.capability, windowId: this.editor.windowId,
           connectionId: this.connectionId, workspace: this.editor.workspace }) + "\n");
       });
       socket.on("data", (chunk: Buffer) => {
@@ -69,25 +83,32 @@ export class BridgeClient {
             const message = parseBrokerMessage(JSON.parse(line));
             if (message.type === "bound") {
               if (this.bound) throw new Error("Duplicate binding.");
-              this.bound = true; settled = true; clearTimeout(timeout); this.editor.status(true); this.sendState(); resolve();
+              this.bound = true; settled = true; clearTimeout(timeout); this.editor.status(true); this.sendState();
+              // Deliver any operation result that settled while disconnected.
+              for (const [requestId, entry] of this.results) if (entry.settled) this.deliver(requestId, entry);
+              resolve();
             } else if (message.type === "error") {
               this.rejected = true; if (!settled) reject(new Error(message.message)); socket.destroy(); return;
+            } else if (message.type === "presentation") {
+              if (!this.bound) throw new Error("Editor is not paired.");
+              // Once per Codium window, across reconnects. A user who reopens the
+              // sidebar afterward must not have it closed again.
+              if (!this.sidebarApplied) {
+                this.sidebarApplied = true;
+                try { void Promise.resolve(this.editor.closePrimarySidebar?.()).catch(() => {}); } catch { /* Optional presentation. */ }
+              }
+            } else if (message.type === "cancel") {
+              if (!this.bound) throw new Error("Editor is not paired.");
+              const entry = this.results.get(message.requestId);
+              if (entry && !entry.settled) entry.cancelled = true;
             } else {
               if (!this.bound) throw new Error("Editor is not paired.");
               if (message.type === "getState") {
-                socket.write(JSON.stringify({ protocol: 1, type: "snapshot", requestId: message.requestId, sequence: ++this.sequence, dirty: this.editor.dirty() }) + "\n");
+                socket.write(JSON.stringify({ protocol: PROTOCOL_VERSION, type: "snapshot", requestId: message.requestId, sequence: ++this.sequence,
+                  dirty: this.editor.dirty(), activeFile: this.editor.activeFile() }) + "\n");
                 continue;
               }
-              const fingerprint = JSON.stringify(message.target);
-              const prior = this.results.get(message.requestId);
-              if (prior && prior.fingerprint !== fingerprint) throw new Error("Request identity conflict.");
-              const promise = prior?.promise ?? this.editor.open(message.target, isCurrent);
-              this.results.set(message.requestId, { fingerprint, promise });
-              while (this.results.size > 64) this.results.delete(this.results.keys().next().value!);
-              void promise.then(
-                () => { if (isCurrent()) this.reply(message.requestId, true); },
-                () => { if (isCurrent()) this.reply(message.requestId, false, "Codium could not open the file. Check that it exists and is readable."); },
-              );
+              this.open(message.requestId, message.target, isCurrent);
             }
           } catch { this.rejected = true; if (!settled) reject(new Error("Editor protocol is incompatible. Check the installed companion version.")); socket.destroy(); return; }
         }
@@ -98,9 +119,79 @@ export class BridgeClient {
         if (generation !== this.generation || this.socket !== socket) return;
         this.socket = undefined;
         this.bound = false; this.editor.status(false);
+        // Keep in-flight operation identities until they settle. Deleting them on
+        // disconnect would let a duplicate execute the same file again after
+        // reconnect. Bounded capacity rejects new work rather than evicting them.
         if (!this.disposed && !this.rejected && settled) this.scheduleReconnect();
       });
     });
+  }
+  private open(requestId: string, target: FileTarget, isCurrent: () => boolean) {
+    const fingerprint = JSON.stringify(target);
+    const prior = this.results.get(requestId);
+    if (prior) {
+      if (prior.fingerprint !== fingerprint) {
+        this.reply(requestId, false, "Request identifier conflict.");
+        return;
+      }
+      if (prior.settled) {
+        // A duplicate may follow a lost result after reconnect; re-deliver the
+        // same authoritative outcome idempotently instead of executing again.
+        prior.delivered = false;
+        this.deliver(requestId, prior);
+      }
+      return;
+    }
+    if (this.results.size >= MAX_RESULTS && !this.evictSettled()) {
+      this.reply(requestId, false, "Too many pending file requests.");
+      return;
+    }
+    // Reserve the identity before invoking the editor operation. A duplicate
+    // joins this entry instead of opening the file a second time.
+    let resolveOpen!: () => void;
+    let rejectOpen!: (error: Error) => void;
+    const promise = new Promise<void>((accept, reject) => { resolveOpen = accept; rejectOpen = reject; });
+    const entry: ResultEntry = { fingerprint, promise, settled: false, cancelled: false, delivered: false };
+    this.results.set(requestId, entry);
+    // Defer the editor continuation one microtask so an advisory cancel in the
+    // same socket batch can stop a not-yet-started open. Once started, Codium's
+    // API cannot be undone; the outcome then remains uncertain.
+    void Promise.resolve().then(() => {
+      if (entry.cancelled || this.disposed || !isCurrent()) {
+        entry.settled = true; entry.ok = false;
+        this.trimResults();
+        return;
+      }
+      return this.editor.open(target, isCurrent).then(resolveOpen, rejectOpen);
+    });
+    void promise.then(
+      () => {
+        entry.settled = true; entry.ok = true;
+        // Reply on the current transport if this operation settles after a
+        // reconnect. The request identity, not the old socket lifetime, owns it.
+        this.deliver(requestId, entry);
+        this.trimResults();
+      },
+      () => {
+        entry.settled = true; entry.ok = false;
+        this.deliver(requestId, entry);
+        this.trimResults();
+      },
+    );
+  }
+  private deliver(requestId: string, entry: ResultEntry) {
+    if (entry.cancelled || entry.delivered || !this.bound || !this.socket || this.socket.destroyed) return;
+    entry.delivered = true;
+    this.reply(requestId, entry.ok === true, entry.ok === true ? undefined : "Codium could not open the file. Check that it exists and is readable.");
+  }
+  private evictSettled(): boolean {
+    for (const [requestId, entry] of this.results) {
+      if (entry.settled) { this.results.delete(requestId); return true; }
+    }
+    return false;
+  }
+  private trimResults() {
+    while (this.results.size > MAX_RESULTS && this.evictSettled()) { /* bounded */ }
   }
   private scheduleReconnect() {
     if (this.disposed || this.rejected) return;
@@ -109,16 +200,28 @@ export class BridgeClient {
     this.reconnect.unref?.();
   }
   private reply(requestId: string, ok: boolean, error?: string) {
-    if (!this.disposed && this.bound) this.socket?.write(JSON.stringify({ protocol: 1, type: "result", requestId, ok, ...(error ? { error } : {}) }) + "\n");
+    if (!this.disposed && this.bound) this.socket?.write(JSON.stringify({ protocol: PROTOCOL_VERSION, type: "result", requestId, ok, ...(error ? { error } : {}) }) + "\n");
     this.sendState();
   }
   sendState() {
-    if (!this.disposed && this.bound && this.socket && !this.socket.destroyed) this.socket.write(JSON.stringify({ protocol: 1, type: "state", sequence: ++this.sequence, dirty: this.editor.dirty() }) + "\n");
+    if (!this.disposed && this.bound && this.socket && !this.socket.destroyed) {
+      this.socket.write(JSON.stringify({ protocol: PROTOCOL_VERSION, type: "state", sequence: ++this.sequence,
+        dirty: this.editor.dirty(), activeFile: this.editor.activeFile() }) + "\n");
+    }
+  }
+  /** Coalesce editor-event state sends; heartbeat and replies stay immediate. */
+  requestState() {
+    if (this.disposed || !this.bound || this.stateTimer) return;
+    this.stateTimer = setTimeout(() => {
+      this.stateTimer = undefined;
+      this.sendState();
+    }, 50);
+    this.stateTimer.unref?.();
   }
   dispose() {
     if (this.disposed) return;
     this.disposed = true; this.generation++; this.bound = false;
-    clearInterval(this.heartbeat); clearTimeout(this.reconnect);
+    clearInterval(this.heartbeat); clearTimeout(this.reconnect); clearTimeout(this.stateTimer);
     const socket = this.socket; this.socket = undefined; socket?.destroy();
     this.editor.status(false);
   }
