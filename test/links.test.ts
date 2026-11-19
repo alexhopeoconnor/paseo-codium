@@ -5,7 +5,7 @@ const origin = "https://codium.example.com";
 
 describe("Codium workspace and file navigation", () => {
   it("resolves Paseo's relative file target against the actual linked-worktree directory", () => {
-    const folder = "/home/alex/.worktrees/project/feature one";
+    const folder = "/workspace/fixture/.worktrees/project/feature one";
     const path = resolveWorkspaceFile(folder, "src/naïve %20#?.py");
     const result = new URL(makeCodiumUrl(origin, folder, { path, line: 42, column: 5 }));
     const payload = new Map<string, string>(JSON.parse(result.searchParams.get("payload")!));
@@ -24,7 +24,7 @@ describe("Codium workspace and file navigation", () => {
   });
 
   it("opens the actual worktree directory without adding a file payload", () => {
-    const folder = "/home/alex/.worktrees/project/feature one";
+    const folder = "/workspace/fixture/.worktrees/project/feature one";
     const result = new URL(makeCodiumUrl(origin, folder));
     expect(result.origin).toBe(origin);
     expect(result.searchParams.get("folder")).toBe(folder);
@@ -32,12 +32,12 @@ describe("Codium workspace and file navigation", () => {
   });
 
   it.each([
-    "/home/alex/project/app.py",
-    "/home/alex/project/a space/naïve 日本語.py",
-    "/home/alex/project/literal%20file#part?query.py",
-    "/home/alex/project/ampersand&equals=plus+.ts",
+    "/workspace/fixture/project/app.py",
+    "/workspace/fixture/project/a space/naïve 日本語.py",
+    "/workspace/fixture/project/literal%20file#part?query.py",
+    "/workspace/fixture/project/ampersand&equals=plus+.ts",
   ])("preserves the file path and cursor independently: %s", (path) => {
-    const folder = "/home/alex/project";
+    const folder = "/workspace/fixture/project";
     const result = new URL(makeCodiumUrl(origin, folder, { path, line: 42, column: 5 }));
     expect(result.searchParams.get("folder")).toBe(folder);
     const payload = new Map<string, string>(JSON.parse(result.searchParams.get("payload")!));
@@ -52,12 +52,12 @@ describe("Codium workspace and file navigation", () => {
   });
 
   it.each([
-    "/home/alex/project/literal%20file#part?query:12:4.py",
-    "/home/alex/project/colon:directory/app.py",
-    "/home/alex/project/filename:12:4",
-    "/home/alex/project/a::b.txt",
+    "/workspace/fixture/project/literal%20file#part?query:12:4.py",
+    "/workspace/fixture/project/colon:directory/app.py",
+    "/workspace/fixture/project/filename:12:4",
+    "/workspace/fixture/project/a::b.txt",
   ])("preserves a colon-containing path using file-only navigation: %s", (path) => {
-    const result = new URL(makeCodiumUrl(origin, "/home/alex/project", { path, line: 42, column: 5 }));
+    const result = new URL(makeCodiumUrl(origin, "/workspace/fixture/project", { path, line: 42, column: 5 }));
     const payload = new Map<string, string>(JSON.parse(result.searchParams.get("payload")!));
     expect(payload.has("gotoLineMode")).toBe(false);
     const target = new URL(payload.get("openFile")!);
