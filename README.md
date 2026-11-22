@@ -19,10 +19,13 @@ unknown outcomes are never retried automatically.
 ## Setup
 
 Requires a reviewed workstation-fork release and VSCodium Web with access to the
-same filesystem paths. The manifest's `^0.15.0` SDK range is not a claim of tested
-stock-host compatibility; the fallback behavior below describes graceful degradation.
-For embedded mode, run both services as the same Unix user and install the
-matching [companion extension](companion/README.md).
+same filesystem paths. The manifest's `^0.17.1` host requirement controls
+admission; it is not a claim that a stock host provides the seven optional
+version-1 host capabilities described below. The development SDK pin
+(`@getpaseo/plugin` `0.16.1`) is the published API used for source typechecking,
+not another host requirement. Missing capabilities keep the fallbacks below. For
+embedded mode, run both services as the same Unix user and install the
+[companion extension](companion/README.md).
 
 ```bash
 paseo plugin add github:alexhopeoconnor/paseo-codium --ref FULL_REVIEWED_COMMIT
@@ -37,13 +40,17 @@ Select an exact commit using the fork's
 [installation guide](https://github.com/alexhopeoconnor/paseo/tree/workstation#optional-workstation-plugins).
 No private infrastructure repository or artifact registry is required.
 
-Build the plugin and companion from that same revision. The current pair is plugin
-`0.4.0` with companion `alexhopeoconnor.paseo-codium-bridge@0.2.0`, protocol `2`.
-Install its verified VSIX with Codium's server launcher and the same data and
-extension directories as the running service. Protocol 2 requires both components
-from the same reviewed revision; an older peer is rejected with a generic
-incompatible-version error. Save edits and close editor sessions before updating
-either component.
+Build the plugin from reviewed source. This release selects plugin `0.4.1` and
+companion `alexhopeoconnor.paseo-codium-bridge@0.2.0` at protocol `2`. The
+companion may be built from reviewed source or supplied as its identical accepted
+VSIX. Install the verified VSIX with Codium's server launcher and the same data
+and extension directories as the running service. Protocol `2` is a wire-format
+check, not a Git-revision handshake: a peer that announces an unsupported or
+mismatched protocol is rejected as an invalid protocol message, while a different
+Git revision that speaks protocol `2` is not rejected for its revision alone.
+Protocol agreement alone does not establish a compatible pair. Use components
+accepted together; identical accepted companion bytes need no rebuild or
+reinstall. Save edits and close editor sessions before updating either component.
 
 The Codium endpoint must serve the reviewed static access helper at
 `/_paseo/ready` behind the same authentication as the IDE. The helper receives a
